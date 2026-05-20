@@ -1,0 +1,26 @@
+export const sportsQuestions = [
+
+    // Sports
+    { text: "How many players are on a soccer team on the field?", options: ["9", "10", "11", "12"], correctIndex: 2 },
+    { text: "Which country has won the most FIFA World Cups?", options: ["Germany", "Italy", "Brazil", "Argentina"], correctIndex: 2 },
+    { text: "In tennis, what is zero called?", options: ["Nil", "Love", "Zip", "Nothing"], correctIndex: 1 },
+    { text: "How many Grand Slam tournaments are there in a year?", options: ["2", "3", "4", "5"], correctIndex: 2 },
+    { text: "Which sport is known as the 'king of sports'?", options: ["Basketball", "Soccer", "Cricket", "Baseball"], correctIndex: 1 },
+    { text: "How many players are on a basketball team on the court?", options: ["4", "5", "6", "7"], correctIndex: 1 },
+    { text: "What is the maximum score in a single frame of bowling?", options: ["20", "24", "30", "36"], correctIndex: 2 },
+    { text: "In which sport would you perform a slam dunk?", options: ["Volleyball", "Basketball", "Handball", "Water Polo"], correctIndex: 1 },
+    { text: "How many holes are there in a standard game of golf?", options: ["9", "18", "27", "36"], correctIndex: 1 },
+    { text: "What is the term for a perfect score in bowling?", options: ["Strike", "Spare", "Turkey", "Double"], correctIndex: 2 },
+    { text: "Which sport uses a shuttlecock?", options: ["Tennis", "Badminton", "Squash", "Racquetball"], correctIndex: 1 },
+    { text: "How many players are on a soccer team on the field?", options: ["9", "10", "11", "12"], correctIndex: 2 },
+    { text: "Which country has won the most FIFA World Cups?", options: ["Germany", "Italy", "Brazil", "Argentina"], correctIndex: 2 },
+    { text: "In tennis, what is zero called?", options: ["Nil", "Love", "Zip", "Nothing"], correctIndex: 1 },
+    { text: "How many Grand Slam tournaments are there in a year?", options: ["2", "3", "4", "5"], correctIndex: 2 },
+    { text: "Which sport is known as the 'king of sports'", options: ["Basketball", "Soccer", "Cricket", "Baseball"], correctIndex: 1 },
+    { text: "How many players are on a basketball team on the court?", options: ["4", "5", "6", "7"], correctIndex: 1 },
+    { text: "What is the maximum score in a single frame of bowling?", options: ["20", "24", "30", "36"], correctIndex: 2 },
+    { text: "In which sport would you perform a slam dunk?", options: ["Volleyball", "Basketball", "Handball", "Water Polo"], correctIndex: 1 },
+    { text: "How many holes are there in a standard game of golf?", options: ["9", "18", "27", "36"], correctIndex: 1 },
+    { text: "What is the term for a perfect score in bowling?", options: ["Strike", "Spare", "Turkey", "Double"], correctIndex: 2 },
+    { text: "Which sport uses a shuttlecock?", options: ["Tennis", "Badminton", "Squash", "Racquetball"], correctIndex: 1 },
+];

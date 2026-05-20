@@ -1,0 +1,89 @@
+import { artQuestions } from "./art";
+import { impressionismQuestions } from "./impressionism";
+import { famous_artQuestions } from "./famous-art";
+import { photographyQuestions } from "./photography";
+import { graphic_designQuestions } from "./graphic-design";
+import { architectureQuestions } from "./architecture";
+import { art_movementsQuestions } from "./art-movements";
+import { cinematographyQuestions } from "./cinematography";
+import { scienceQuestions } from "./science";
+import { biologyQuestions } from "./biology";
+import { earth_scienceQuestions } from "./earth-science";
+import { geneticsQuestions } from "./genetics";
+import { human_anatomyQuestions } from "./human-anatomy";
+import { chemistryQuestions } from "./chemistry";
+import { meteorologyQuestions } from "./meteorology";
+import { botanyQuestions } from "./botany";
+import { forensicsQuestions } from "./forensics";
+import { historyQuestions } from "./history";
+import { world_war_1Questions } from "./world-war-1";
+import { world_war_2Questions } from "./world-war-2";
+import { ancient_romeQuestions } from "./ancient-rome";
+import { industrial_revolutionQuestions } from "./industrial-revolution";
+import { cold_warQuestions } from "./cold-war";
+import { ancient_egyptQuestions } from "./ancient-egypt";
+import { geographyQuestions } from "./geography";
+import { world_capitalsQuestions } from "./world-capitals";
+import { national_parksQuestions } from "./national-parks";
+import { oceans_seasQuestions } from "./oceans-seas";
+import { islandsQuestions } from "./islands";
+import { us_statesQuestions } from "./us-states";
+import { countriesQuestions } from "./countries";
+import { mathQuestions } from "./math";
+import { algebraQuestions } from "./algebra";
+import { geometryQuestions } from "./geometry";
+import { trigonometryQuestions } from "./trigonometry";
+import { calculusQuestions } from "./calculus";
+import { statisticsQuestions } from "./statistics";
+import { math_puzzlesQuestions } from "./math-puzzles";
+import { sportsQuestions } from "./sports";
+import { technologyQuestions } from "./technology";
+import { video_gamesQuestions } from "./video-games";
+import { astronomyQuestions } from "./astronomy";
+import { foodQuestions } from "./food";
+
+export const allCategoryQuestions = [
+  { slug: "art", questions: artQuestions },
+  { slug: "impressionism", questions: impressionismQuestions },
+  { slug: "famous-art", questions: famous_artQuestions },
+  { slug: "photography", questions: photographyQuestions },
+  { slug: "graphic-design", questions: graphic_designQuestions },
+  { slug: "architecture", questions: architectureQuestions },
+  { slug: "art-movements", questions: art_movementsQuestions },
+  { slug: "cinematography", questions: cinematographyQuestions },
+  { slug: "science", questions: scienceQuestions },
+  { slug: "biology", questions: biologyQuestions },
+  { slug: "earth-science", questions: earth_scienceQuestions },
+  { slug: "genetics", questions: geneticsQuestions },
+  { slug: "human-anatomy", questions: human_anatomyQuestions },
+  { slug: "chemistry", questions: chemistryQuestions },
+  { slug: "meteorology", questions: meteorologyQuestions },
+  { slug: "botany", questions: botanyQuestions },
+  { slug: "forensics", questions: forensicsQuestions },
+  { slug: "history", questions: historyQuestions },
+  { slug: "world-war-1", questions: world_war_1Questions },
+  { slug: "world-war-2", questions: world_war_2Questions },
+  { slug: "ancient-rome", questions: ancient_romeQuestions },
+  { slug: "industrial-revolution", questions: industrial_revolutionQuestions },
+  { slug: "cold-war", questions: cold_warQuestions },
+  { slug: "ancient-egypt", questions: ancient_egyptQuestions },
+  { slug: "geography", questions: geographyQuestions },
+  { slug: "world-capitals", questions: world_capitalsQuestions },
+  { slug: "national-parks", questions: national_parksQuestions },
+  { slug: "oceans-seas", questions: oceans_seasQuestions },
+  { slug: "islands", questions: islandsQuestions },
+  { slug: "us-states", questions: us_statesQuestions },
+  { slug: "countries", questions: countriesQuestions },
+  { slug: "math", questions: mathQuestions },
+  { slug: "algebra", questions: algebraQuestions },
+  { slug: "geometry", questions: geometryQuestions },
+  { slug: "trigonometry", questions: trigonometryQuestions },
+  { slug: "calculus", questions: calculusQuestions },
+  { slug: "statistics", questions: statisticsQuestions },
+  { slug: "math-puzzles", questions: math_puzzlesQuestions },
+  { slug: "sports", questions: sportsQuestions },
+  { slug: "technology", questions: technologyQuestions },
+  { slug: "video-games", questions: video_gamesQuestions },
+  { slug: "astronomy", questions: astronomyQuestions },
+  { slug: "food", questions: foodQuestions },
+];

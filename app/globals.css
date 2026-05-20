@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Background theme: set by BackgroundThemeProvider via data-bg on body */
+:root {
+  --bg-page: #09090b; /* zinc-950 default */
+}
+body[data-bg="zinc"] { --bg-page: #978B8C; }
+body[data-bg="slate"] { --bg-page: #708090; }
+body[data-bg="stone"] { --bg-page: #ADA587; }
+body[data-bg="neutral"] { --bg-page: #767676; }
+body[data-bg="amber"] { --bg-page: #FFBF00; }
+body[data-bg="rose"] { --bg-page: #FF007F; }
+body[data-bg="fuchsia"] { --bg-page: #9d0759; }
+body[data-bg="crimson"] { --bg-page: #DC143C; }
+body[data-bg="scarlet"] { --bg-page: #FF2400; }
+body[data-bg="ruby"] { --bg-page: #E0115F; }
+body[data-bg="coral"] { --bg-page: #FF7F50; }
+body[data-bg="salmon"] { --bg-page: #FA8072; }
+body[data-bg="peach"] { --bg-page: #FFE5B4; }
+body[data-bg="tangerine"] { --bg-page: #F28500; }
+body[data-bg="apricot"] { --bg-page: #FBCEB1; }
+body[data-bg="orange"] { --bg-page: #FFA500; }
+body[data-bg="gold"] { --bg-page: #FFD700; }
+body[data-bg="honey"] { --bg-page: #FFBE42; }
+body[data-bg="mustard"] { --bg-page: #c78c06; }
+body[data-bg="lemon"] { --bg-page: #FFF44F; }
+body[data-bg="yellow"] { --bg-page: #FFFF00; }
+body[data-bg="chartreuse"] { --bg-page: #DFFF00; }
+body[data-bg="lime"] { --bg-page: #32CD32; }
+body[data-bg="mint"] { --bg-page: #98FF98; }
+body[data-bg="jade"] { --bg-page: #00A86B; }
+body[data-bg="emerald"] { --bg-page: #50C878; }
+body[data-bg="forest"] { --bg-page: #228B22; }
+body[data-bg="pine"] { --bg-page: #01796f; }
+body[data-bg="sage"] { --bg-page: #B2AC88; }
+body[data-bg="olive"] { --bg-page: #808000; }
+body[data-bg="moss"] { --bg-page: #8A9A5B; }
+body[data-bg="teal"] { --bg-page: #008080; }
+body[data-bg="cyan"] { --bg-page: #00FFFF; }
+body[data-bg="aqua"] { --bg-page: #05c3dd; }
+body[data-bg="turquoise"] { --bg-page: #40E0D0; }
+body[data-bg="sky"] { --bg-page: #87CEEB; }
+body[data-bg="azure"] { --bg-page: #007FFF; }
+
+bbody[data-bg="cerulean"] { --bg-page: #1a2d42; }
+body[data-bg="cobalt"] { --bg-page: #1f2e52; }
+body[data-bg="navy"] { --bg-page: #1a2847; }
+body[data-bg="sapphire"] { --bg-page: #1f2d4d; }
+body[data-bg="royal"] { --bg-page: #2d2e5c; }
+body[data-bg="indigo"] { --bg-page: #2e2452; }
+body[data-bg="violet"] { --bg-page: #38245c; }
+body[data-bg="purple"] { --bg-page: #42246b; }
+body[data-bg="plum"] { --bg-page: #4d244d; }
+body[data-bg="lavender"] { --bg-page: #3d2e52; }
+body[data-bg="mauve"] { --bg-page: #4d3361; }
+body[data-bg="orchid"] { --bg-page: #52337a; }
+body[data-bg="magenta"] { --bg-page: #4d1f5c; }
+body[data-bg="wine"] { --bg-page: #4d1f33; }
+body[data-bg="burgundy"] { --bg-page: #52243d; }
+body[data-bg="maroon"] { --bg-page: #521f38; }
+body[data-bg="cherry"] { --bg-page: #5c243d; }
+body[data-bg="raspberry"] { --bg-page: #5c2447; }
+body[data-bg="strawberry"] { --bg-page: #612e42; }
+body[data-bg="watermelon"] { --bg-page: #61334d; }
+body[data-bg="blush"] { --bg-page: #5c2e42; }
+body[data-bg="pink"] { --bg-page: #613352; }
+body[data-bg="bubblegum"] { --bg-page: #663857; }
+body[data-bg="flamingo"] { --bg-page: #61335c; }
+body[data-bg="carnation"] { --bg-page: #612e57; }
+body[data-bg="mahogany"] { --bg-page: #52241f; }
+body[data-bg="copper"] { --bg-page: #5c3324; }
+body[data-bg="bronze"] { --bg-page: #57382e; }
+body[data-bg="rust"] { --bg-page: #5c2e1f; }
+body[data-bg="sienna"] { --bg-page: #57332e; }
+body[data-bg="umber"] { --bg-page: #4d2e29; }
+body[data-bg="chocolate"] { --bg-page: #4d2e24; }
+body[data-bg="coffee"] { --bg-page: #473329; }
+body[data-bg="espresso"] { --bg-page: #422e2e; }
+body[data-bg="mocha"] { --bg-page: #523833; }
+body[data-bg="cocoa"] { --bg-page: #4d332e; }
+body[data-bg="taupe"] { --bg-page: #4d3833; }
+body[data-bg="beige"] { --bg-page: #574d42; }
+body[data-bg="tan"] { --bg-page: #5c5247; }
+body[data-bg="sand"] { --bg-page: #61574d; }
+body[data-bg="cream"] { --bg-page: #665c52; }
+body[data-bg="ivory"] { --bg-page: #6b615c; }
+body[data-bg="pearl"] { --bg-page: #525252; }
+body[data-bg="silver"] { --bg-page: #4d4d4d; }
+body[data-bg="platinum"] { --bg-page: #474747; }
+body[data-bg="steel"] { --bg-page: #42474d; }
+body[data-bg="graphite"] { --bg-page: #383d47; }
+body[data-bg="charcoal"] { --bg-page: #333842; }
+body[data-bg="ash"] { --bg-page: #3d3d3d; }
+body[data-bg="smoke"] { --bg-page: #424242; }
+body[data-bg="fog"] { --bg-page: #47474d; }
+body[data-bg="canary"] { --bg-page: #57571f; }
+body[data-bg="butter"] { --bg-page: #615c24; }
+body[data-bg="dandelion"] { --bg-page: #666124; }
+body[data-bg="sunflower"] { --bg-page: #6b571f; }
+body[data-bg="goldenrod"] { --bg-page: #615724; }
+body[data-bg="saffron"] { --bg-page: #66521f; }
+body[data-bg="marigold"] { --bg-page: #6b5724; }
+body[data-bg="banana"] { --bg-page: #6b6129; }
+
+
+body {
+  min-height: 100vh;
+  background-color: var(--bg-page);
+}

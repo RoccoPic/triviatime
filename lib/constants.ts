@@ -6,14 +6,12 @@ export const QUESTIONS_PER_FLOOR = 4;
 export const STREAK_FOR_LIFE = 3;
 export const COLLECTION_CONVERSION_RATE = 0.5; // 50% of run money at run end
 
-// Difficulty score: 1–100, lower = easier. Correct → decrease, wrong → increase.
+// Question difficulty score: 1–100, lower = easier. Correct → decrease, wrong → increase.
 export const DIFFICULTY_SCORE_MIN = 1;
 export const DIFFICULTY_SCORE_MAX = 100;
-export const DIFFICULTY_STEP = 3;
+export const DIFFICULTY_STEP = 3; // how much question difficulty shifts per answer
 
-// Difficulty-based tiering: floors use questions in these score bands (lower = easier).
-// Floor 1 = easy, floor 2 = medium, floor 3+ = hard. Used to filter questions per floor.
-export const DIFFICULTY_TIER_EASY_MAX = 40; // 1–40
-export const DIFFICULTY_TIER_MEDIUM_MIN = 25;
-export const DIFFICULTY_TIER_MEDIUM_MAX = 75;
-export const DIFFICULTY_TIER_HARD_MIN = 60; // 60–100
+// Player difficulty: unique per run, adapts after every answer.
+export const PLAYER_DIFFICULTY_START = 50;  // starting difficulty
+export const PLAYER_DIFFICULTY_STEP = 5;    // how much it shifts per answer
+export const PLAYER_DIFFICULTY_WINDOW = 25; // ±window around player difficulty for question selection

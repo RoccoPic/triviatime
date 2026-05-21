@@ -79,18 +79,19 @@ model Question {
 }
 
 model Run {
-  id               String    @id @default(cuid())
-  userId           String
-  startedAt        DateTime  @default(now())
-  endedAt          DateTime?
-  livesRemaining   Int       @default(3)
-  runMoney         Int       @default(0)
-  currentFloor     Int       @default(1)
-  score            Int       @default(0)
-  won              Boolean?
-  floorCategoryOrder Json?   // number[] category ids per floor
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  answers          Answer[]
+  id                 String    @id @default(cuid())
+  userId             String
+  startedAt          DateTime  @default(now())
+  endedAt            DateTime?
+  livesRemaining     Int       @default(3)
+  runMoney           Int       @default(0)
+  currentFloor       Int       @default(1)
+  score              Int       @default(0)
+  won                Boolean?
+  floorCategoryOrder Json?     // number[] category ids per floor
+  playerDifficulty   Int       @default(50) // 1-100: adapts per answer, lower = easier
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers            Answer[]
 
   @@index([userId])
 }

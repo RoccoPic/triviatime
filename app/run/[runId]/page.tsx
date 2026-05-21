@@ -7,7 +7,7 @@ import Link from "next/link";
 import { RunHUD } from "@/components/RunHUD";
 
 type EncounterState = {
-  run: { id: string; livesRemaining: number; runMoney: number; currentFloor: number; score: number; endedAt: string | null };
+  run: { id: string; livesRemaining: number; runMoney: number; currentFloor: number; score: number; endedAt: string | null; playerDifficulty: number };
   floorCategory: { id: string; slug: string; name: string };
   monsterTitle: string;
   encounterIndex: number;
@@ -145,6 +145,7 @@ export default function RunEncounterPage() {
           encounterIndex={encounterIndex}
           totalEncounters={totalEncountersThisFloor}
           floorCategoryName={floorCategory.name}
+          playerDifficulty={run.playerDifficulty}
         />
 
         <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6">

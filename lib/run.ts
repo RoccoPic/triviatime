@@ -9,76 +9,55 @@ import {
   DIFFICULTY_SCORE_MIN,
   DIFFICULTY_SCORE_MAX,
   DIFFICULTY_STEP,
-  DIFFICULTY_TIER_EASY_MAX,
-  DIFFICULTY_TIER_MEDIUM_MIN,
-  DIFFICULTY_TIER_MEDIUM_MAX,
-  DIFFICULTY_TIER_HARD_MIN,
+  PLAYER_DIFFICULTY_START,
+  PLAYER_DIFFICULTY_STEP,
+  PLAYER_DIFFICULTY_WINDOW,
 } from "./constants";
-
-/** Deterministic seeded RNG so the same run+floor always gets the same question order. */
-function seededRandom(seed: number) {
-  return function () {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
-}
-
-function hashString(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h << 5) - h + s.charCodeAt(i);
-    h |= 0;
-  }
-  return h;
-}
-
-/** Shuffle array in place with a seeded RNG (Fisher–Yates). */
-function shuffleWithSeed<T>(arr: T[], seed: number): T[] {
-  const rng = seededRandom(seed);
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
 
 type QuestionRow = { id: string; text: string; options: unknown };
 
-/** Difficulty tier for a floor: floor 1 = easy, 2 = medium, 3+ = hard. */
-function getDifficultyRangeForFloor(floorIndex: number): { min: number; max: number } {
-  if (floorIndex <= 1) {
-    return { min: DIFFICULTY_SCORE_MIN, max: DIFFICULTY_TIER_EASY_MAX };
-  }
-  if (floorIndex === 2) {
-    return { min: DIFFICULTY_TIER_MEDIUM_MIN, max: DIFFICULTY_TIER_MEDIUM_MAX };
-  }
-  return { min: DIFFICULTY_TIER_HARD_MIN, max: DIFFICULTY_SCORE_MAX };
-}
-
-/** Fetch questions for a floor in a deterministic random order (same runId + floorIndex = same order). Uses difficulty tiering: early floors get easier questions, later floors get harder. */
-async function getQuestionsForFloorInOrder(
+/**
+ * Pick the next question for a player based on their current difficulty.
+ * Selects from a ±PLAYER_DIFFICULTY_WINDOW band around the player's level,
+ * excluding questions already answered this floor.
+ * Falls back to all category questions if the band is empty.
+ */
+async function getNextQuestion(
   categoryId: string,
-  runId: string,
-  floorIndex: number
-): Promise<QuestionRow[]> {
-  const { min, max } = getDifficultyRangeForFloor(floorIndex);
-  let all = await prisma.question.findMany({
-    where: { categoryId, difficultyScore: { gte: min, lte: max } },
+  playerDifficulty: number,
+  excludeIds: string[]
+): Promise<QuestionRow | null> {
+  const min = Math.max(DIFFICULTY_SCORE_MIN, playerDifficulty - PLAYER_DIFFICULTY_WINDOW);
+  const max = Math.min(DIFFICULTY_SCORE_MAX, playerDifficulty + PLAYER_DIFFICULTY_WINDOW);
+
+  const exclusion = excludeIds.length > 0 ? { notIn: excludeIds } : undefined;
+
+  let candidates = await prisma.question.findMany({
+    where: { categoryId, difficultyScore: { gte: min, lte: max }, id: exclusion },
     select: { id: true, text: true, options: true },
   });
-  if (all.length < QUESTIONS_PER_FLOOR) {
-    all = await prisma.question.findMany({
-      where: { categoryId },
+
+  if (candidates.length === 0) {
+    candidates = await prisma.question.findMany({
+      where: { categoryId, id: exclusion },
       select: { id: true, text: true, options: true },
     });
   }
-  const seed = hashString(runId) + floorIndex * 31;
-  const shuffled = shuffleWithSeed([...all], seed);
-  return shuffled.slice(0, QUESTIONS_PER_FLOOR);
+
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
 export type RunWithEncounter = {
-  run: { id: string; livesRemaining: number; runMoney: number; currentFloor: number; score: number; endedAt: Date | null };
+  run: {
+    id: string;
+    livesRemaining: number;
+    runMoney: number;
+    currentFloor: number;
+    score: number;
+    endedAt: Date | null;
+    playerDifficulty: number;
+  };
   floorCategory: { id: string; slug: string; name: string };
   monsterTitle: string;
   encounterIndex: number;
@@ -104,6 +83,7 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
       runMoney: RUN_MONEY_START,
       currentFloor: 1,
       floorCategoryOrder,
+      playerDifficulty: PLAYER_DIFFICULTY_START,
     },
   });
 
@@ -111,11 +91,8 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
   const category = await prisma.category.findUnique({ where: { id: firstCategoryId } });
   if (!category) return null;
 
-  const questions = await getQuestionsForFloorInOrder(firstCategoryId, run.id, 1);
-  const totalEncountersThisFloor = questions.length;
-  if (totalEncountersThisFloor === 0) return null;
-
-  const q = questions[0];
+  const q = await getNextQuestion(firstCategoryId, PLAYER_DIFFICULTY_START, []);
+  if (!q) return null;
   const options = Array.isArray(q.options) ? (q.options as string[]) : [];
 
   return {
@@ -126,11 +103,12 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
       currentFloor: run.currentFloor,
       score: run.score,
       endedAt: run.endedAt,
+      playerDifficulty: run.playerDifficulty,
     },
     floorCategory: { id: category.id, slug: category.slug, name: category.name },
     monsterTitle: getMonsterTitle(category.slug, run.id, run.currentFloor, 0),
     encounterIndex: 0,
-    totalEncountersThisFloor,
+    totalEncountersThisFloor: QUESTIONS_PER_FLOOR,
     question: { id: q.id, text: q.text, options },
     floorCategoryOrder,
   };
@@ -147,14 +125,13 @@ export async function getRunEncounter(runId: string, userId: string): Promise<Ru
   const category = await prisma.category.findUnique({ where: { id: categoryId } });
   if (!category) return null;
 
-  const questions = await getQuestionsForFloorInOrder(categoryId, runId, run.currentFloor);
   const answersThisFloor = run.answers.filter((a) => a.floorIndex === run.currentFloor);
   const encounterIndex = answersThisFloor.length;
-  const totalEncountersThisFloor = questions.length;
-  if (encounterIndex >= totalEncountersThisFloor) {
-    return null;
-  }
-  const q = questions[encounterIndex];
+  if (encounterIndex >= QUESTIONS_PER_FLOOR) return null;
+
+  const answeredIds = answersThisFloor.map((a) => a.questionId);
+  const q = await getNextQuestion(categoryId, run.playerDifficulty, answeredIds);
+  if (!q) return null;
   const options = Array.isArray(q.options) ? (q.options as string[]) : [];
 
   return {
@@ -165,30 +142,38 @@ export async function getRunEncounter(runId: string, userId: string): Promise<Ru
       currentFloor: run.currentFloor,
       score: run.score,
       endedAt: run.endedAt,
+      playerDifficulty: run.playerDifficulty,
     },
     floorCategory: { id: category.id, slug: category.slug, name: category.name },
     monsterTitle: getMonsterTitle(category.slug, run.id, run.currentFloor, encounterIndex),
     encounterIndex,
-    totalEncountersThisFloor,
+    totalEncountersThisFloor: QUESTIONS_PER_FLOOR,
     question: { id: q.id, text: q.text, options },
     floorCategoryOrder: order,
   };
 }
 
 export async function getQuestionsForFloor(runId: string, userId: string): Promise<{ id: string; text: string; options: string[] }[] | null> {
-  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return null;
 
   const order = (run.floorCategoryOrder as string[] | null) ?? [];
   const categoryId = order[run.currentFloor - 1];
   if (!categoryId) return null;
 
-  const questions = await getQuestionsForFloorInOrder(categoryId, runId, run.currentFloor);
-  return questions.map((q) => ({
-    id: q.id,
-    text: q.text,
-    options: Array.isArray(q.options) ? (q.options as string[]) : [],
-  }));
+  const answeredIds = run.answers.filter((a) => a.floorIndex === run.currentFloor).map((a) => a.questionId);
+  const remaining = QUESTIONS_PER_FLOOR - answeredIds.length;
+  if (remaining <= 0) return [];
+
+  const questions: { id: string; text: string; options: string[] }[] = [];
+  const seen = new Set(answeredIds);
+  for (let i = 0; i < remaining; i++) {
+    const q = await getNextQuestion(categoryId, run.playerDifficulty, Array.from(seen));
+    if (!q) break;
+    seen.add(q.id);
+    questions.push({ id: q.id, text: q.text, options: Array.isArray(q.options) ? (q.options as string[]) : [] });
+  }
+  return questions;
 }
 
 export async function getCurrentEncounterIndex(runId: string, userId: string): Promise<{ floor: number; encounterIndex: number } | null> {
@@ -234,13 +219,19 @@ export async function recordAnswer(
     data: { runId, questionId, correct, skipped: false, floorIndex: run.currentFloor, encounterIndex },
   });
 
-  const newScore = correct
+  // Adjust question's global difficulty score.
+  const newQuestionDifficulty = correct
     ? Math.max(DIFFICULTY_SCORE_MIN, (question.difficultyScore ?? 50) - DIFFICULTY_STEP)
     : Math.min(DIFFICULTY_SCORE_MAX, (question.difficultyScore ?? 50) + DIFFICULTY_STEP);
   await prisma.question.update({
     where: { id: questionId },
-    data: { difficultyScore: newScore },
+    data: { difficultyScore: newQuestionDifficulty },
   });
+
+  // Adjust player's personal difficulty.
+  const newPlayerDifficulty = correct
+    ? Math.max(DIFFICULTY_SCORE_MIN, run.playerDifficulty - PLAYER_DIFFICULTY_STEP)
+    : Math.min(DIFFICULTY_SCORE_MAX, run.playerDifficulty + PLAYER_DIFFICULTY_STEP);
 
   if (livesRemaining <= 0) {
     await endRun(runId, userId);
@@ -253,16 +244,11 @@ export async function recordAnswer(
       livesRemaining,
       runMoney,
       score: run.score + (correct ? 1 : 0),
+      playerDifficulty: newPlayerDifficulty,
     },
   });
 
-  const questionsThisFloor = await getQuestionsForFloorInOrder(
-    (run.floorCategoryOrder as string[])[run.currentFloor - 1],
-    runId,
-    run.currentFloor
-  );
-
-  if (encounterIndex + 1 >= questionsThisFloor.length) {
+  if (encounterIndex + 1 >= QUESTIONS_PER_FLOOR) {
     const nextRun = await advanceToNextFloor(runId, userId);
     return {
       correct,
@@ -306,9 +292,7 @@ export async function recordSkip(runId: string, userId: string, questionId: stri
     data: { runMoney: run.runMoney - SKIP_COST },
   });
 
-  const questionsThisFloor = await getQuestionsForFloorInOrder(order, runId, run.currentFloor);
-
-  if (encounterIndex + 1 >= questionsThisFloor.length) {
+  if (encounterIndex + 1 >= QUESTIONS_PER_FLOOR) {
     const nextRun = await advanceToNextFloor(runId, userId);
     return { ok: true, next: nextRun ? "encounter" : "floor_complete", run: nextRun ?? undefined };
   }

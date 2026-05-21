@@ -1,0 +1,125 @@
+// ─── Map types & generation ──────────────────────────────────────────────────
+
+export type NodeType = "battle" | "elite" | "shop" | "rest";
+
+export interface MapNode {
+  id: string;        // "c{col}r{row}"
+  col: number;       // 0-indexed column
+  row: number;       // 0-indexed row within column
+  type: NodeType;
+  categoryId: string | null;   // null for shop / rest nodes
+  categoryName?: string;       // denormalized for display
+  nextIds: string[];           // IDs of nodes this connects to in col+1
+}
+
+export interface RunMapData {
+  nodes: MapNode[];
+  completedNodeIds: string[];  // in order of completion
+}
+
+// Column layout: number of nodes per column (first and last are always 1)
+const COLUMN_SIZES = [1, 2, 3, 3, 2, 1] as const;
+
+export const MAP_NUM_COLS = COLUMN_SIZES.length;
+
+function pickType(col: number): NodeType {
+  // First and last columns are always battles
+  if (col === 0 || col === COLUMN_SIZES.length - 1) return "battle";
+  const r = Math.random();
+  if (r < 0.50) return "battle";
+  if (r < 0.70) return "elite";
+  if (r < 0.87) return "shop";
+  return "rest";
+}
+
+/** Generate a full run map from a pool of categories.
+ *  Each battle/elite node gets a unique shuffled category assigned to it. */
+export function generateMap(
+  categories: { id: string; name: string }[]
+): RunMapData {
+  const shuffled = [...categories].sort(() => Math.random() - 0.5);
+  let catIdx = 0;
+
+  const nodes: MapNode[] = [];
+
+  for (let col = 0; col < COLUMN_SIZES.length; col++) {
+    for (let row = 0; row < COLUMN_SIZES[col]; row++) {
+      const type = pickType(col);
+      const needsCat = type === "battle" || type === "elite";
+      const cat = needsCat ? shuffled[catIdx++ % shuffled.length] : undefined;
+      nodes.push({
+        id: `c${col}r${row}`,
+        col,
+        row,
+        type,
+        categoryId: cat?.id ?? null,
+        categoryName: cat?.name,
+        nextIds: [],
+      });
+    }
+  }
+
+  // ── Build edges ────────────────────────────────────────────────────────────
+  // Each node connects to 1–2 nodes in the next column.
+  // Every next-column node must have at least one incoming edge.
+  for (let col = 0; col < COLUMN_SIZES.length - 1; col++) {
+    const cur = nodes.filter((n) => n.col === col);
+    const nxt = nodes.filter((n) => n.col === col + 1);
+
+    for (const node of cur) {
+      const count = nxt.length === 1 ? 1 : Math.random() < 0.4 ? 2 : 1;
+      const shuffledNxt = [...nxt].sort(() => Math.random() - 0.5);
+      for (let i = 0; i < Math.min(count, shuffledNxt.length); i++) {
+        if (!node.nextIds.includes(shuffledNxt[i].id)) {
+          node.nextIds.push(shuffledNxt[i].id);
+        }
+      }
+    }
+
+    // Guarantee every next node is reachable
+    for (const nxtNode of nxt) {
+      if (!cur.some((n) => n.nextIds.includes(nxtNode.id))) {
+        const rand = cur[Math.floor(Math.random() * cur.length)];
+        if (!rand.nextIds.includes(nxtNode.id)) {
+          rand.nextIds.push(nxtNode.id);
+        }
+      }
+    }
+  }
+
+  return { nodes, completedNodeIds: [] };
+}
+
+// ─── Query helpers ────────────────────────────────────────────────────────────
+
+export function getNodeById(
+  mapData: RunMapData,
+  id: string
+): MapNode | undefined {
+  return mapData.nodes.find((n) => n.id === id);
+}
+
+/** Node IDs the player may enter next (empty = run complete). */
+export function getAvailableNodeIds(mapData: RunMapData): string[] {
+  const { nodes, completedNodeIds } = mapData;
+  if (completedNodeIds.length === 0) {
+    return nodes.filter((n) => n.col === 0).map((n) => n.id);
+  }
+  const lastId = completedNodeIds[completedNodeIds.length - 1];
+  const lastNode = nodes.find((n) => n.id === lastId);
+  if (!lastNode) return [];
+  return lastNode.nextIds.filter((id) => !completedNodeIds.includes(id));
+}
+
+/** True when the player has completed a node in the final column. */
+export function isMapComplete(mapData: RunMapData): boolean {
+  const maxCol = Math.max(...mapData.nodes.map((n) => n.col));
+  return mapData.completedNodeIds.some(
+    (id) => mapData.nodes.find((n) => n.id === id)?.col === maxCol
+  );
+}
+
+/** 1-indexed "floor" number for display, derived from the current node column. */
+export function nodeToFloorNumber(node: MapNode): number {
+  return node.col + 1;
+}

@@ -27,5 +27,11 @@ export async function GET(
     return NextResponse.json({ error: "Run or encounter not found" }, { status: 404 });
   }
 
+  // Map state
+  if ("state" in data && data.state === "map") {
+    return NextResponse.json(data);
+  }
+
+  // Encounter
   return NextResponse.json(data);
 }

@@ -18,6 +18,16 @@ model User {
   accounts        Account[]
   sessions        Session[]
   runs            Run[]
+  // Collection shop — one-time permanent upgrades
+  upgHeadStart    Boolean   @default(false)
+  upgExtraLife    Boolean   @default(false)
+  upgReducedSkip  Boolean   @default(false)
+  upgResilience   Boolean   @default(false)
+  upgLuckyStreak  Boolean   @default(false)
+  upgMoneyBonus   Boolean   @default(false)
+  upgStartDiff    Boolean   @default(false)
+  upgShield       Boolean   @default(false)
+  upgSecondWind   Boolean   @default(false)
 }
 
 model Account {
@@ -25,14 +35,14 @@ model Account {
   type              String
   provider          String
   providerAccountId String
-  refresh_token     String? @db.Text
-  access_token      String? @db.Text
+  refresh_token     String?  @db.Text
+  access_token      String?  @db.Text
   expires_at        Int?
   token_type        String?
   scope             String?
-  id_token          String? @db.Text
+  id_token          String?  @db.Text
   session_state     String?
-  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([provider, providerAccountId])
 }
@@ -45,31 +55,31 @@ model Session {
 }
 
 model Category {
-  id          String      @id @default(cuid())
-  slug        String      @unique
-  name        String
-  questions   Question[]
+  id            String        @id @default(cuid())
+  slug          String        @unique
+  name          String
+  questions     Question[]
   subcategories Subcategory[]
 }
 
 model Subcategory {
-  id         String    @id @default(cuid())
+  id         String     @id @default(cuid())
   categoryId String
   slug       String
   name       String
-  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  category   Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   questions  Question[]
 }
 
 model Question {
-  id              String    @id @default(cuid())
+  id              String       @id @default(cuid())
   categoryId      String
   subcategoryId   String?
-  text            String    @db.Text
-  options         Json      // string[]
+  text            String       @db.Text
+  options         Json
   correctIndex    Int
-  difficultyScore Int       @default(50) // 1-100: lower = easier, higher = harder; updated when users answer
-  category        Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  difficultyScore Int          @default(50) // 1-100: lower = easier
+  category        Category     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   subcategory     Subcategory? @relation(fields: [subcategoryId], references: [id], onDelete: SetNull)
   answers         Answer[]
 
@@ -79,19 +89,35 @@ model Question {
 }
 
 model Run {
-  id                 String    @id @default(cuid())
-  userId             String
-  startedAt          DateTime  @default(now())
-  endedAt            DateTime?
-  livesRemaining     Int       @default(3)
-  runMoney           Int       @default(0)
-  currentFloor       Int       @default(1)
-  score              Int       @default(0)
-  won                Boolean?
-  floorCategoryOrder Json?     // number[] category ids per floor
-  playerDifficulty   Int       @default(50) // 1-100: adapts per answer, lower = easier
-  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  answers            Answer[]
+  id                  String    @id @default(cuid())
+  userId              String
+  startedAt           DateTime  @default(now())
+  endedAt             DateTime?
+  livesRemaining      Int       @default(3)
+  runMoney            Int       @default(0)
+  currentFloor        Int       @default(1)
+  score               Int       @default(0)
+  won                 Boolean?
+  floorCategoryOrder  Json?
+  playerDifficulty    Int       @default(50)  // 1-100: adapts per answer
+  // Branching map
+  mapData             Json?     // RunMapData: nodes + completedNodeIds
+  currentNodeId       String?   // which map node is active (null = on map screen)
+  // Per-run parameters snapshotted from upgrades at run start
+  skipCostRun         Int       @default(28)
+  moneyPerCorrectRun  Int       @default(15)
+  streakForLifeRun    Int       @default(3)
+  diffStepRun         Int       @default(5)
+  // In-run shop active effects
+  shieldCount         Int       @default(0)
+  freezeCount         Int       @default(0)
+  moneyMultiplier     Float     @default(1.0)
+  hasFiftyFifty       Boolean   @default(false)
+  hasHint             Boolean   @default(false)
+  freeMulligan        Int       @default(0)
+  secondWindAvailable Boolean   @default(false)
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers             Answer[]
 
   @@index([userId])
 }

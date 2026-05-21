@@ -1,10 +1,15 @@
 import { prisma } from "@/lib/db";
 import { getMonsterTitle } from "@/lib/monsterList";
 import {
+  generateMap, getAvailableNodeIds, getNodeById, isMapComplete, nodeToFloorNumber,
+  type RunMapData, type MapNode,
+} from "@/lib/map";
+import {
   LIVES_START,
   RUN_MONEY_START,
-  QUESTIONS_PER_FLOOR,
   MONEY_PER_CORRECT,
+  SKIP_COST,
+  QUESTIONS_PER_FLOOR,
   STREAK_FOR_LIFE,
   DIFFICULTY_SCORE_MIN,
   DIFFICULTY_SCORE_MAX,
@@ -12,16 +17,157 @@ import {
   PLAYER_DIFFICULTY_START,
   PLAYER_DIFFICULTY_STEP,
   PLAYER_DIFFICULTY_WINDOW,
+  SHOP_EXTRA_LIFE,
+  SHOP_SECOND_CHANCE,
+  SHOP_FIFTY_FIFTY,
+  SHOP_HINT,
+  SHOP_FREEZE_DIFFICULTY,
+  SHOP_DOUBLE_DOWN,
+  SHOP_DIFFICULTY_RESET,
+  SHOP_CATEGORY_SWAP,
+  SHOP_CATEGORY_LOCK,
+  SHOP_MULLIGAN,
+  SHOP_FLOOR_PEEK,
 } from "./constants";
 
-type QuestionRow = { id: string; text: string; options: unknown };
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
-/**
- * Pick the next question for a player based on their current difficulty.
- * Selects from a ±PLAYER_DIFFICULTY_WINDOW band around the player's level,
- * excluding questions already answered this floor.
- * Falls back to all category questions if the band is empty.
- */
+function seededRandom(seed: number) {
+  return function () {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+}
+
+function hashString(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) - h + s.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
+/** Deterministically pick wrong indices to eliminate for 50/50 or Hint. */
+function computeEliminatedIndices(
+  correctIndex: number,
+  optionCount: number,
+  count: number,
+  seed: number
+): number[] {
+  const wrong = Array.from({ length: optionCount }, (_, i) => i).filter((i) => i !== correctIndex);
+  const rng = seededRandom(Math.abs(seed));
+  for (let i = wrong.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [wrong[i], wrong[j]] = [wrong[j], wrong[i]];
+  }
+  return wrong.slice(0, Math.min(count, wrong.length));
+}
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+type QuestionRow = { id: string; text: string; options: unknown; correctIndex: number };
+
+export type RunState = {
+  id: string;
+  livesRemaining: number;
+  runMoney: number;
+  currentFloor: number;
+  score: number;
+  endedAt: Date | null;
+  playerDifficulty: number;
+  skipCostRun: number;
+  moneyPerCorrectRun: number;
+  streakForLifeRun: number;
+  diffStepRun: number;
+  shieldCount: number;
+  freezeCount: number;
+  moneyMultiplier: number;
+  hasFiftyFifty: boolean;
+  hasHint: boolean;
+  freeMulligan: number;
+  secondWindAvailable: boolean;
+  floorCategoryOrder: string[];
+};
+
+export type RunWithEncounter = {
+  run: RunState;
+  floorCategory: { id: string; slug: string; name: string };
+  monsterTitle: string;
+  encounterIndex: number;
+  totalEncountersThisFloor: number;
+  question: { id: string; text: string; options: string[]; eliminatedIndices?: number[] };
+  floorCategoryOrder: string[];
+};
+
+export type { RunMapData, MapNode };
+
+export type RunMapState = {
+  state: "map";
+  run: RunState;
+  mapData: RunMapData;
+  availableNodeIds: string[];
+};
+
+export type EnterNodeResult =
+  | { state: "encounter"; encounter: RunWithEncounter }
+  | { state: "free_shop"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
+  | { state: "rest"; run: RunState; mapData: RunMapData; availableNodeIds: string[] };
+
+export type ShopItem =
+  | "extra_life"
+  | "second_chance"
+  | "fifty_fifty"
+  | "hint"
+  | "freeze_difficulty"
+  | "double_down"
+  | "difficulty_reset"
+  | "category_swap"
+  | "category_lock"
+  | "mulligan"
+  | "floor_peek";
+
+const SHOP_PRICES: Record<ShopItem, number> = {
+  extra_life:        SHOP_EXTRA_LIFE,
+  second_chance:     SHOP_SECOND_CHANCE,
+  fifty_fifty:       SHOP_FIFTY_FIFTY,
+  hint:              SHOP_HINT,
+  freeze_difficulty: SHOP_FREEZE_DIFFICULTY,
+  double_down:       SHOP_DOUBLE_DOWN,
+  difficulty_reset:  SHOP_DIFFICULTY_RESET,
+  category_swap:     SHOP_CATEGORY_SWAP,
+  category_lock:     SHOP_CATEGORY_LOCK,
+  mulligan:          SHOP_MULLIGAN,
+  floor_peek:        SHOP_FLOOR_PEEK,
+};
+
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toRunState(run: any): RunState {
+  return {
+    id: run.id,
+    livesRemaining: run.livesRemaining,
+    runMoney: run.runMoney,
+    currentFloor: run.currentFloor,
+    score: run.score,
+    endedAt: run.endedAt,
+    playerDifficulty: run.playerDifficulty,
+    skipCostRun: run.skipCostRun ?? SKIP_COST,
+    moneyPerCorrectRun: run.moneyPerCorrectRun ?? MONEY_PER_CORRECT,
+    streakForLifeRun: run.streakForLifeRun ?? STREAK_FOR_LIFE,
+    diffStepRun: run.diffStepRun ?? PLAYER_DIFFICULTY_STEP,
+    shieldCount: run.shieldCount ?? 0,
+    freezeCount: run.freezeCount ?? 0,
+    moneyMultiplier: run.moneyMultiplier ?? 1.0,
+    hasFiftyFifty: run.hasFiftyFifty ?? false,
+    hasHint: run.hasHint ?? false,
+    freeMulligan: run.freeMulligan ?? 0,
+    secondWindAvailable: run.secondWindAvailable ?? false,
+    floorCategoryOrder: (run.floorCategoryOrder as string[]) ?? [],
+  };
+}
+
 async function getNextQuestion(
   categoryId: string,
   playerDifficulty: number,
@@ -29,18 +175,17 @@ async function getNextQuestion(
 ): Promise<QuestionRow | null> {
   const min = Math.max(DIFFICULTY_SCORE_MIN, playerDifficulty - PLAYER_DIFFICULTY_WINDOW);
   const max = Math.min(DIFFICULTY_SCORE_MAX, playerDifficulty + PLAYER_DIFFICULTY_WINDOW);
-
   const exclusion = excludeIds.length > 0 ? { notIn: excludeIds } : undefined;
 
   let candidates = await prisma.question.findMany({
     where: { categoryId, difficultyScore: { gte: min, lte: max }, id: exclusion },
-    select: { id: true, text: true, options: true },
+    select: { id: true, text: true, options: true, correctIndex: true },
   });
 
   if (candidates.length === 0) {
     candidates = await prisma.question.findMany({
       where: { categoryId, id: exclusion },
-      select: { id: true, text: true, options: true },
+      select: { id: true, text: true, options: true, correctIndex: true },
     });
   }
 
@@ -48,76 +193,95 @@ async function getNextQuestion(
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-export type RunWithEncounter = {
-  run: {
-    id: string;
-    livesRemaining: number;
-    runMoney: number;
-    currentFloor: number;
-    score: number;
-    endedAt: Date | null;
-    playerDifficulty: number;
-  };
-  floorCategory: { id: string; slug: string; name: string };
-  monsterTitle: string;
-  encounterIndex: number;
-  totalEncountersThisFloor: number;
-  question: { id: string; text: string; options: string[] };
-  floorCategoryOrder: string[];
-};
+// ─── Public API ──────────────────────────────────────────────────────────────
 
-export async function startRun(userId: string, enabledSlugs?: string[] | null): Promise<RunWithEncounter | null> {
-  const categories = await prisma.category.findMany({ select: { id: true, slug: true }, orderBy: { slug: "asc" } });
+export async function startRun(userId: string, enabledSlugs?: string[] | null): Promise<RunMapState | null> {
+  const [user, allCategories] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId } }),
+    prisma.category.findMany({ select: { id: true, slug: true, name: true }, orderBy: { slug: "asc" } }),
+  ]);
+
   const toUse =
     enabledSlugs != null && enabledSlugs.length > 0
-      ? categories.filter((c) => enabledSlugs.includes(c.slug))
-      : categories;
-  const pool = toUse.length > 0 ? toUse : categories;
-  const shuffled = [...pool].sort(() => Math.random() - 0.5);
-  const floorCategoryOrder = shuffled.map((c) => c.id);
+      ? allCategories.filter((c) => enabledSlugs.includes(c.slug))
+      : allCategories;
+  const pool = toUse.length > 0 ? toUse : allCategories;
+
+  const mapData = generateMap(pool);
 
   const run = await prisma.run.create({
     data: {
       userId,
-      livesRemaining: LIVES_START,
-      runMoney: RUN_MONEY_START,
+      livesRemaining: LIVES_START + (user?.upgExtraLife ? 1 : 0),
+      runMoney: user?.upgHeadStart ? 30 : RUN_MONEY_START,
       currentFloor: 1,
-      floorCategoryOrder,
-      playerDifficulty: PLAYER_DIFFICULTY_START,
+      mapData: mapData as object,
+      currentNodeId: null,
+      playerDifficulty: user?.upgStartDiff ? 30 : PLAYER_DIFFICULTY_START,
+      skipCostRun: user?.upgReducedSkip ? 20 : SKIP_COST,
+      moneyPerCorrectRun: user?.upgMoneyBonus ? 20 : MONEY_PER_CORRECT,
+      streakForLifeRun: user?.upgLuckyStreak ? 2 : STREAK_FOR_LIFE,
+      diffStepRun: user?.upgResilience ? 3 : PLAYER_DIFFICULTY_STEP,
+      shieldCount: user?.upgShield ? 1 : 0,
+      secondWindAvailable: user?.upgSecondWind ?? false,
     },
   });
 
-  const firstCategoryId = floorCategoryOrder[0];
-  const category = await prisma.category.findUnique({ where: { id: firstCategoryId } });
-  if (!category) return null;
-
-  const q = await getNextQuestion(firstCategoryId, PLAYER_DIFFICULTY_START, []);
-  if (!q) return null;
-  const options = Array.isArray(q.options) ? (q.options as string[]) : [];
-
-  return {
-    run: {
-      id: run.id,
-      livesRemaining: run.livesRemaining,
-      runMoney: run.runMoney,
-      currentFloor: run.currentFloor,
-      score: run.score,
-      endedAt: run.endedAt,
-      playerDifficulty: run.playerDifficulty,
-    },
-    floorCategory: { id: category.id, slug: category.slug, name: category.name },
-    monsterTitle: getMonsterTitle(category.slug, run.id, run.currentFloor, 0),
-    encounterIndex: 0,
-    totalEncountersThisFloor: QUESTIONS_PER_FLOOR,
-    question: { id: q.id, text: q.text, options },
-    floorCategoryOrder,
-  };
+  const available = getAvailableNodeIds(mapData);
+  return { state: "map", run: toRunState(run), mapData, availableNodeIds: available };
 }
 
-export async function getRunEncounter(runId: string, userId: string): Promise<RunWithEncounter | "game_over" | null> {
+export async function getRunEncounter(
+  runId: string,
+  userId: string
+): Promise<RunWithEncounter | RunMapState | "game_over" | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return "game_over";
 
+  // ── Map-based run ──────────────────────────────────────────────────────────
+  if (run.mapData) {
+    const mapData = run.mapData as unknown as RunMapData;
+
+    // No active node → player is on the map screen
+    if (!run.currentNodeId) {
+      const available = getAvailableNodeIds(mapData);
+      return { state: "map", run: toRunState(run), mapData, availableNodeIds: available };
+    }
+
+    const node = getNodeById(mapData, run.currentNodeId);
+    if (!node || !node.categoryId) return null;
+
+    const floorNum = nodeToFloorNumber(node);
+    const answersThisFloor = run.answers.filter((a) => a.floorIndex === floorNum);
+    const encounterIndex = answersThisFloor.length;
+    if (encounterIndex >= QUESTIONS_PER_FLOOR) return null;
+
+    const category = await prisma.category.findUnique({ where: { id: node.categoryId } });
+    if (!category) return null;
+
+    const answeredIds = answersThisFloor.map((a) => a.questionId);
+    const q = await getNextQuestion(node.categoryId, run.playerDifficulty, answeredIds);
+    if (!q) return null;
+
+    const options = Array.isArray(q.options) ? (q.options as string[]) : [];
+    let eliminatedIndices: number[] | undefined;
+    if (run.hasFiftyFifty || run.hasHint) {
+      const count = run.hasFiftyFifty ? 2 : 1;
+      eliminatedIndices = computeEliminatedIndices(q.correctIndex, options.length, count, hashString(q.id + runId));
+    }
+
+    return {
+      run: toRunState(run),
+      floorCategory: { id: category.id, slug: category.slug, name: category.name },
+      monsterTitle: getMonsterTitle(category.slug, run.id, floorNum, encounterIndex),
+      encounterIndex,
+      totalEncountersThisFloor: QUESTIONS_PER_FLOOR,
+      question: { id: q.id, text: q.text, options, eliminatedIndices },
+      floorCategoryOrder: [],
+    };
+  }
+
+  // ── Legacy linear run (no map) ─────────────────────────────────────────────
   const order = (run.floorCategoryOrder as string[] | null) ?? [];
   const categoryId = order[run.currentFloor - 1];
   if (!categoryId) return null;
@@ -132,23 +296,21 @@ export async function getRunEncounter(runId: string, userId: string): Promise<Ru
   const answeredIds = answersThisFloor.map((a) => a.questionId);
   const q = await getNextQuestion(categoryId, run.playerDifficulty, answeredIds);
   if (!q) return null;
+
   const options = Array.isArray(q.options) ? (q.options as string[]) : [];
+  let eliminatedIndices: number[] | undefined;
+  if (run.hasFiftyFifty || run.hasHint) {
+    const count = run.hasFiftyFifty ? 2 : 1;
+    eliminatedIndices = computeEliminatedIndices(q.correctIndex, options.length, count, hashString(q.id + runId));
+  }
 
   return {
-    run: {
-      id: run.id,
-      livesRemaining: run.livesRemaining,
-      runMoney: run.runMoney,
-      currentFloor: run.currentFloor,
-      score: run.score,
-      endedAt: run.endedAt,
-      playerDifficulty: run.playerDifficulty,
-    },
+    run: toRunState(run),
     floorCategory: { id: category.id, slug: category.slug, name: category.name },
     monsterTitle: getMonsterTitle(category.slug, run.id, run.currentFloor, encounterIndex),
     encounterIndex,
     totalEncountersThisFloor: QUESTIONS_PER_FLOOR,
-    question: { id: q.id, text: q.text, options },
+    question: { id: q.id, text: q.text, options, eliminatedIndices },
     floorCategoryOrder: order,
   };
 }
@@ -188,50 +350,72 @@ export async function recordAnswer(
   userId: string,
   questionId: string,
   selectedIndex: number
-): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_complete" | "game_over"; run?: RunWithEncounter }> {
+): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
-  if (!run || run.endedAt) {
-    return { correct: false, livesRemaining: 0, runMoney: 0, next: "game_over" };
-  }
+  if (!run || run.endedAt) return { correct: false, livesRemaining: 0, runMoney: 0, next: "game_over" };
+
+  // Determine the active category and floor number (map-based vs legacy)
+  const mapData = run.mapData ? (run.mapData as unknown as RunMapData) : null;
+  const activeNode: MapNode | null = mapData && run.currentNodeId
+    ? (getNodeById(mapData, run.currentNodeId) ?? null)
+    : null;
+  const activeCategoryId = activeNode?.categoryId ?? (run.floorCategoryOrder as string[])[run.currentFloor - 1];
+  const activeFloor = activeNode ? nodeToFloorNumber(activeNode) : run.currentFloor;
 
   const question = await prisma.question.findUnique({ where: { id: questionId } });
-  if (!question || question.categoryId !== (run.floorCategoryOrder as string[])[run.currentFloor - 1]) {
+  if (!question || question.categoryId !== activeCategoryId) {
     return { correct: false, livesRemaining: run.livesRemaining, runMoney: run.runMoney, next: "encounter" };
   }
 
   const correct = question.correctIndex === selectedIndex;
-  const answersThisFloor = run.answers.filter((a) => a.floorIndex === run.currentFloor);
+  const answersThisFloor = run.answers.filter((a) => a.floorIndex === activeFloor);
   const encounterIndex = answersThisFloor.length;
 
   let livesRemaining = run.livesRemaining;
   let runMoney = run.runMoney;
+  let playerDifficulty = run.playerDifficulty;
+  let shieldCount = run.shieldCount ?? 0;
+  let freezeCount = run.freezeCount ?? 0;
+  const moneyMultiplier = run.moneyMultiplier ?? 1.0;
+  let secondWindAvailable = run.secondWindAvailable ?? false;
+  const streakThreshold = run.streakForLifeRun ?? STREAK_FOR_LIFE;
+  const diffStep = run.diffStepRun ?? PLAYER_DIFFICULTY_STEP;
+  const moneyPerCorrect = run.moneyPerCorrectRun ?? MONEY_PER_CORRECT;
+
   if (correct) {
-    runMoney += MONEY_PER_CORRECT;
-    const lastThree = run.answers.slice(-(STREAK_FOR_LIFE - 1)).every((a) => a.correct && !a.skipped);
-    if (lastThree && run.answers.length >= STREAK_FOR_LIFE - 1) {
-      livesRemaining = Math.min(livesRemaining + 1, 6);
-    }
+    runMoney += Math.round(moneyPerCorrect * moneyMultiplier);
+    const recentAnswers = run.answers.slice(-(streakThreshold - 1));
+    const onStreak = recentAnswers.length >= streakThreshold - 1 && recentAnswers.every((a) => a.correct && !a.skipped);
+    if (onStreak) livesRemaining = Math.min(livesRemaining + 1, 6);
+    playerDifficulty = Math.max(DIFFICULTY_SCORE_MIN, playerDifficulty - PLAYER_DIFFICULTY_STEP);
   } else {
-    livesRemaining -= 1;
+    if (shieldCount > 0) {
+      shieldCount -= 1;
+    } else {
+      livesRemaining -= 1;
+    }
+    if (freezeCount > 0) {
+      freezeCount -= 1;
+    } else {
+      playerDifficulty = Math.min(DIFFICULTY_SCORE_MAX, playerDifficulty + diffStep);
+    }
   }
 
   await prisma.answer.create({
-    data: { runId, questionId, correct, skipped: false, floorIndex: run.currentFloor, encounterIndex },
+    data: { runId, questionId, correct, skipped: false, floorIndex: activeFloor, encounterIndex },
   });
 
   // Adjust question's global difficulty score.
   const newQuestionDifficulty = correct
     ? Math.max(DIFFICULTY_SCORE_MIN, (question.difficultyScore ?? 50) - DIFFICULTY_STEP)
     : Math.min(DIFFICULTY_SCORE_MAX, (question.difficultyScore ?? 50) + DIFFICULTY_STEP);
-  await prisma.question.update({
-    where: { id: questionId },
-    data: { difficultyScore: newQuestionDifficulty },
-  });
+  await prisma.question.update({ where: { id: questionId }, data: { difficultyScore: newQuestionDifficulty } });
 
-  // Adjust player's personal difficulty.
-  const newPlayerDifficulty = correct
-    ? Math.max(DIFFICULTY_SCORE_MIN, run.playerDifficulty - PLAYER_DIFFICULTY_STEP)
-    : Math.min(DIFFICULTY_SCORE_MAX, run.playerDifficulty + PLAYER_DIFFICULTY_STEP);
+  // Second Wind: revive before checking game_over.
+  if (livesRemaining <= 0 && secondWindAvailable) {
+    livesRemaining = 1;
+    secondWindAvailable = false;
+  }
 
   if (livesRemaining <= 0) {
     await endRun(runId, userId);
@@ -244,19 +428,29 @@ export async function recordAnswer(
       livesRemaining,
       runMoney,
       score: run.score + (correct ? 1 : 0),
-      playerDifficulty: newPlayerDifficulty,
+      playerDifficulty,
+      shieldCount,
+      freezeCount,
+      moneyMultiplier: correct && moneyMultiplier > 1 ? 1.0 : moneyMultiplier,
+      hasFiftyFifty: false,
+      hasHint: false,
+      secondWindAvailable,
     },
   });
 
   if (encounterIndex + 1 >= QUESTIONS_PER_FLOOR) {
-    const nextRun = await advanceToNextFloor(runId, userId);
-    return {
-      correct,
-      livesRemaining,
-      runMoney,
-      next: nextRun ? "encounter" : "floor_complete",
-      run: nextRun ?? undefined,
-    };
+    // Map-based: always return floor_clear so the UI can show the rest stop,
+    // then the player clicks Continue which calls completeCurrentNode → map.
+    if (mapData) {
+      return { correct, livesRemaining, runMoney, next: "floor_clear" };
+    }
+    // Legacy linear
+    const order = (run.floorCategoryOrder as string[]) ?? [];
+    if (run.currentFloor >= order.length) {
+      await completeRun(runId, userId);
+      return { correct, livesRemaining, runMoney, next: "run_complete" };
+    }
+    return { correct, livesRemaining, runMoney, next: "floor_clear" };
   }
 
   const nextEncounter = await getRunEncounter(runId, userId);
@@ -265,44 +459,281 @@ export async function recordAnswer(
     livesRemaining,
     runMoney,
     next: "encounter",
-    run: nextEncounter && nextEncounter !== "game_over" ? nextEncounter : undefined,
+    run: nextEncounter && nextEncounter !== "game_over" && "question" in nextEncounter ? nextEncounter : undefined,
   };
 }
 
-export async function recordSkip(runId: string, userId: string, questionId: string): Promise<{ ok: boolean; next: "encounter" | "floor_complete" | "game_over"; run?: RunWithEncounter }> {
+export async function recordSkip(
+  runId: string,
+  userId: string,
+  questionId: string
+): Promise<{ ok: boolean; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { ok: false, next: "game_over" };
 
-  const { SKIP_COST } = await import("./constants");
-  if (run.runMoney < SKIP_COST) return { ok: false, next: "encounter" };
+  const hasMulligan = (run.freeMulligan ?? 0) > 0;
+  const skipCost = run.skipCostRun ?? SKIP_COST;
+  if (!hasMulligan && run.runMoney < skipCost) return { ok: false, next: "encounter" };
 
-  const order = (run.floorCategoryOrder as string[])[run.currentFloor - 1];
+  const skipMapData = run.mapData ? (run.mapData as unknown as RunMapData) : null;
+  const skipNode: MapNode | null = skipMapData && run.currentNodeId
+    ? (getNodeById(skipMapData, run.currentNodeId) ?? null)
+    : null;
+  const skipCategoryId = skipNode?.categoryId ?? (run.floorCategoryOrder as string[])[run.currentFloor - 1];
+  const skipFloor = skipNode ? nodeToFloorNumber(skipNode) : run.currentFloor;
+
   const question = await prisma.question.findUnique({ where: { id: questionId } });
-  if (!question || question.categoryId !== order) return { ok: false, next: "encounter" };
+  if (!question || question.categoryId !== skipCategoryId) return { ok: false, next: "encounter" };
 
-  const answersThisFloor = run.answers.filter((a) => a.floorIndex === run.currentFloor);
+  const answersThisFloor = run.answers.filter((a) => a.floorIndex === skipFloor);
   const encounterIndex = answersThisFloor.length;
 
   await prisma.answer.create({
-    data: { runId, questionId, correct: false, skipped: true, floorIndex: run.currentFloor, encounterIndex },
+    data: { runId, questionId, correct: false, skipped: true, floorIndex: skipFloor, encounterIndex },
   });
 
   await prisma.run.update({
     where: { id: runId },
-    data: { runMoney: run.runMoney - SKIP_COST },
+    data: {
+      runMoney: hasMulligan ? run.runMoney : run.runMoney - skipCost,
+      freeMulligan: hasMulligan ? (run.freeMulligan ?? 0) - 1 : (run.freeMulligan ?? 0),
+      hasFiftyFifty: false,
+      hasHint: false,
+    },
   });
 
   if (encounterIndex + 1 >= QUESTIONS_PER_FLOOR) {
-    const nextRun = await advanceToNextFloor(runId, userId);
-    return { ok: true, next: nextRun ? "encounter" : "floor_complete", run: nextRun ?? undefined };
+    if (skipMapData) {
+      return { ok: true, next: "floor_clear" };
+    }
+    const catOrder = (run.floorCategoryOrder as string[]) ?? [];
+    if (run.currentFloor >= catOrder.length) {
+      await completeRun(runId, userId);
+      return { ok: true, next: "run_complete" };
+    }
+    return { ok: true, next: "floor_clear" };
   }
 
   const nextEncounter = await getRunEncounter(runId, userId);
   return {
     ok: true,
     next: "encounter",
-    run: nextEncounter && nextEncounter !== "game_over" ? nextEncounter : undefined,
+    run: nextEncounter && nextEncounter !== "game_over" && "question" in nextEncounter ? nextEncounter : undefined,
   };
+}
+
+export async function purchaseShopItem(
+  runId: string,
+  userId: string,
+  item: ShopItem
+): Promise<{ ok: boolean; error?: string; run?: RunState; nextFloorCategory?: string }> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return { ok: false, error: "Run not found" };
+
+  const cost = SHOP_PRICES[item];
+  if (run.runMoney < cost) return { ok: false, error: "Not enough run money" };
+
+  if (item === "fifty_fifty" && run.hasFiftyFifty) return { ok: false, error: "Already active" };
+  if (item === "hint" && run.hasHint) return { ok: false, error: "Already active" };
+  if (item === "double_down" && (run.moneyMultiplier ?? 1) > 1) return { ok: false, error: "Already active" };
+
+  const order = [...(run.floorCategoryOrder as string[])];
+  const nextFloorIdx = run.currentFloor; // 1-indexed floor means this is the 0-indexed next position
+
+  const updateData: {
+    runMoney: number;
+    livesRemaining?: number;
+    playerDifficulty?: number;
+    shieldCount?: number;
+    freezeCount?: number;
+    moneyMultiplier?: number;
+    hasFiftyFifty?: boolean;
+    hasHint?: boolean;
+    freeMulligan?: number;
+    floorCategoryOrder?: string[];
+  } = { runMoney: run.runMoney - cost };
+
+  let nextFloorCategory: string | undefined;
+
+  switch (item) {
+    case "extra_life":
+      updateData.livesRemaining = Math.min(run.livesRemaining + 1, 6);
+      break;
+    case "second_chance":
+      updateData.shieldCount = (run.shieldCount ?? 0) + 1;
+      break;
+    case "fifty_fifty":
+      updateData.hasFiftyFifty = true;
+      break;
+    case "hint":
+      updateData.hasHint = true;
+      break;
+    case "freeze_difficulty":
+      updateData.freezeCount = (run.freezeCount ?? 0) + 3;
+      break;
+    case "double_down":
+      updateData.moneyMultiplier = 2.0;
+      break;
+    case "difficulty_reset":
+      updateData.playerDifficulty = PLAYER_DIFFICULTY_START;
+      break;
+    case "category_swap": {
+      if (nextFloorIdx < order.length) {
+        const allCats = await prisma.category.findMany({ select: { id: true } });
+        const currentId = order[nextFloorIdx];
+        const candidates = allCats.map((c) => c.id).filter((id) => id !== currentId);
+        if (candidates.length > 0) {
+          order[nextFloorIdx] = candidates[Math.floor(Math.random() * candidates.length)];
+          updateData.floorCategoryOrder = order;
+        }
+      }
+      break;
+    }
+    case "category_lock": {
+      if (nextFloorIdx > 0 && nextFloorIdx < order.length) {
+        order[nextFloorIdx] = order[nextFloorIdx - 1];
+        updateData.floorCategoryOrder = order;
+      }
+      break;
+    }
+    case "mulligan":
+      updateData.freeMulligan = (run.freeMulligan ?? 0) + 1;
+      break;
+    case "floor_peek": {
+      if (nextFloorIdx < order.length) {
+        const cat = await prisma.category.findUnique({ where: { id: order[nextFloorIdx] } });
+        nextFloorCategory = cat?.name;
+      }
+      break;
+    }
+  }
+
+  const updated = await prisma.run.update({ where: { id: runId }, data: updateData });
+  return { ok: true, run: toRunState(updated), nextFloorCategory };
+}
+
+/** Enter a map node. Sets currentNodeId and returns appropriate state. */
+export async function enterNode(
+  runId: string,
+  userId: string,
+  nodeId: string
+): Promise<EnterNodeResult | "game_over" | null> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
+  if (!run || run.endedAt) return "game_over";
+  if (!run.mapData) return null;
+
+  const mapData = run.mapData as unknown as RunMapData;
+  const available = getAvailableNodeIds(mapData);
+  if (!available.includes(nodeId)) return null;
+
+  const node = getNodeById(mapData, nodeId);
+  if (!node) return null;
+
+  const floorNum = nodeToFloorNumber(node);
+
+  // Rest node: instantly complete — no questions, just +1 life
+  if (node.type === "rest") {
+    const newLives = Math.min(run.livesRemaining + 1, 6);
+    const newMapData: RunMapData = {
+      ...mapData,
+      completedNodeIds: [...mapData.completedNodeIds, nodeId],
+    };
+    if (isMapComplete(newMapData)) {
+      await completeRun(runId, userId);
+      return null; // caller checks for run_complete separately
+    }
+    const updated = await prisma.run.update({
+      where: { id: runId },
+      data: {
+        livesRemaining: newLives,
+        currentFloor: floorNum,
+        mapData: newMapData as object,
+        currentNodeId: null,
+      },
+    });
+    const newAvailable = getAvailableNodeIds(newMapData);
+    return { state: "rest", run: toRunState(updated), mapData: newMapData, availableNodeIds: newAvailable };
+  }
+
+  // Shop node: set as active node, return free_shop state
+  if (node.type === "shop") {
+    const updated = await prisma.run.update({
+      where: { id: runId },
+      data: { currentNodeId: nodeId, currentFloor: floorNum },
+    });
+    return {
+      state: "free_shop",
+      run: toRunState(updated),
+      mapData,
+      availableNodeIds: available,
+    };
+  }
+
+  // Battle / elite: set as active node, return first encounter
+  await prisma.run.update({
+    where: { id: runId },
+    data: { currentNodeId: nodeId, currentFloor: floorNum },
+  });
+
+  const encounter = await getRunEncounter(runId, userId);
+  if (!encounter || encounter === "game_over" || !("question" in encounter)) return null;
+  return { state: "encounter", encounter };
+}
+
+/** Complete the current node (after battle rest-stop or leaving a free shop).
+ *  Clears currentNodeId and returns map state. */
+export async function completeCurrentNode(
+  runId: string,
+  userId: string
+): Promise<RunMapState | "run_complete" | null> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return null;
+  if (!run.mapData || !run.currentNodeId) return null;
+
+  const mapData = run.mapData as unknown as RunMapData;
+  const nodeId = run.currentNodeId;
+
+  const newMapData: RunMapData = {
+    ...mapData,
+    completedNodeIds: [...mapData.completedNodeIds, nodeId],
+  };
+
+  if (isMapComplete(newMapData)) {
+    await completeRun(runId, userId);
+    return "run_complete";
+  }
+
+  const updated = await prisma.run.update({
+    where: { id: runId },
+    data: { mapData: newMapData as object, currentNodeId: null },
+  });
+
+  const available = getAvailableNodeIds(newMapData);
+  return { state: "map", run: toRunState(updated), mapData: newMapData, availableNodeIds: available };
+}
+
+/** Legacy: advance to the next floor linearly (kept for old runs without mapData). */
+export async function startNextFloor(runId: string, userId: string): Promise<RunWithEncounter | RunMapState | "run_complete" | null> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return null;
+
+  // Map-based run: delegate to completeCurrentNode
+  if (run.mapData) {
+    return completeCurrentNode(runId, userId);
+  }
+
+  // Legacy linear
+  const order = (run.floorCategoryOrder as string[]) ?? [];
+  const nextFloor = run.currentFloor + 1;
+  if (nextFloor > order.length) {
+    await completeRun(runId, userId);
+    return "run_complete";
+  }
+
+  await prisma.run.update({ where: { id: runId }, data: { currentFloor: nextFloor } });
+  const enc = await getRunEncounter(runId, userId);
+  if (!enc || enc === "game_over" || !("question" in enc)) return null;
+  return enc;
 }
 
 export async function completeRun(runId: string, userId: string): Promise<void> {
@@ -312,35 +743,10 @@ export async function completeRun(runId: string, userId: string): Promise<void> 
   const { COLLECTION_CONVERSION_RATE } = await import("./constants");
   const toAdd = Math.floor(run.runMoney * COLLECTION_CONVERSION_RATE);
 
-  await prisma.run.update({
-    where: { id: runId },
-    data: { endedAt: new Date(), won: true },
-  });
+  await prisma.run.update({ where: { id: runId }, data: { endedAt: new Date(), won: true } });
   if (toAdd > 0) {
-    await prisma.user.update({
-      where: { id: userId },
-      data: { collectionMoney: { increment: toAdd } },
-    });
+    await prisma.user.update({ where: { id: userId }, data: { collectionMoney: { increment: toAdd } } });
   }
-}
-
-async function advanceToNextFloor(runId: string, userId: string): Promise<RunWithEncounter | null> {
-  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
-  if (!run || run.endedAt) return null;
-
-  const order = (run.floorCategoryOrder as string[]) ?? [];
-  const nextFloor = run.currentFloor + 1;
-  if (nextFloor > order.length) {
-    await completeRun(runId, userId);
-    return null;
-  }
-
-  await prisma.run.update({
-    where: { id: runId },
-    data: { currentFloor: nextFloor },
-  });
-
-  return getRunEncounter(runId, userId).then((r) => (r === "game_over" ? null : r));
 }
 
 export async function endRun(runId: string, userId: string): Promise<void> {
@@ -350,14 +756,8 @@ export async function endRun(runId: string, userId: string): Promise<void> {
   const { COLLECTION_CONVERSION_RATE } = await import("./constants");
   const toAdd = Math.floor(run.runMoney * COLLECTION_CONVERSION_RATE);
 
-  await prisma.run.update({
-    where: { id: runId },
-    data: { endedAt: new Date(), livesRemaining: 0 },
-  });
+  await prisma.run.update({ where: { id: runId }, data: { endedAt: new Date(), livesRemaining: 0 } });
   if (toAdd > 0) {
-    await prisma.user.update({
-      where: { id: userId },
-      data: { collectionMoney: { increment: toAdd } },
-    });
+    await prisma.user.update({ where: { id: userId }, data: { collectionMoney: { increment: toAdd } } });
   }
 }

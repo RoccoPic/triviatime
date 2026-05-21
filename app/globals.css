@@ -5,6 +5,21 @@
 /* Background theme: set by BackgroundThemeProvider via data-bg on body */
 :root {
   --bg-page: #09090b; /* zinc-950 default */
+  --text-page: #f1f5f9;   /* light text for dark backgrounds */
+  --text-muted: #94a3b8;  /* muted light */
+}
+
+/* Light backgrounds → dark text */
+body[data-bg="zinc"], body[data-bg="slate"], body[data-bg="stone"], body[data-bg="neutral"],
+body[data-bg="amber"], body[data-bg="coral"], body[data-bg="salmon"], body[data-bg="peach"],
+body[data-bg="tangerine"], body[data-bg="apricot"], body[data-bg="orange"], body[data-bg="gold"],
+body[data-bg="honey"], body[data-bg="mustard"], body[data-bg="lemon"], body[data-bg="yellow"],
+body[data-bg="chartreuse"], body[data-bg="lime"], body[data-bg="mint"], body[data-bg="jade"],
+body[data-bg="emerald"], body[data-bg="sage"], body[data-bg="olive"], body[data-bg="moss"],
+body[data-bg="cyan"], body[data-bg="aqua"], body[data-bg="turquoise"], body[data-bg="sky"],
+body[data-bg="azure"] {
+  --text-page: #18181b;
+  --text-muted: #52525b;
 }
 body[data-bg="zinc"] { --bg-page: #978B8C; }
 body[data-bg="slate"] { --bg-page: #708090; }

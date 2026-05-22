@@ -4,6 +4,8 @@ function difficultyLabel(d: number): { label: string; className: string } {
   return { label: "Hard", className: "text-red-400" };
 }
 
+import { getRelicById } from "@/lib/relics";
+
 export function RunHUD({
   lives,
   runMoney,
@@ -18,6 +20,7 @@ export function RunHUD({
   hasFiftyFifty = false,
   hasHint = false,
   freeMulligan = 0,
+  relics = [],
 }: {
   lives: number;
   runMoney: number;
@@ -32,6 +35,7 @@ export function RunHUD({
   hasFiftyFifty?: boolean;
   hasHint?: boolean;
   freeMulligan?: number;
+  relics?: string[];
 }) {
   const diff = difficultyLabel(playerDifficulty);
 
@@ -48,24 +52,24 @@ export function RunHUD({
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-1">
-            <span className="text-zinc-400 text-sm">Lives</span>
+            <span className="text-zinc-200 text-sm">Lives</span>
             <span className="font-bold text-red-400">{lives}</span>
           </div>
           <div className="flex items-center gap-1">
-            <span className="text-zinc-400 text-sm">Run $</span>
+            <span className="text-zinc-200 text-sm">Run $</span>
             <span className="font-bold text-amber-400">{runMoney}</span>
           </div>
           <div className="flex items-center gap-1">
-            <span className="text-zinc-400 text-sm">Floor</span>
+            <span className="text-zinc-200 text-sm">Floor</span>
             <span className="font-bold">{floor}</span>
-            <span className="text-zinc-500 text-sm">({floorCategoryName})</span>
+            <span className="text-zinc-300 text-sm">({floorCategoryName})</span>
           </div>
           <div className="flex items-center gap-1">
-            <span className="text-zinc-400 text-sm">Difficulty</span>
+            <span className="text-zinc-200 text-sm">Difficulty</span>
             <span className={`font-bold ${diff.className}`}>{diff.label}</span>
           </div>
         </div>
-        <div className="text-zinc-400 text-sm">
+        <div className="text-zinc-200 text-sm">
           Encounter {encounterIndex + 1} / {totalEncounters}
         </div>
       </div>
@@ -77,6 +81,24 @@ export function RunHUD({
               {e.label}
             </span>
           ))}
+        </div>
+      )}
+
+      {relics.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1 border-t border-zinc-700/60">
+          {relics.map((id) => {
+            const r = getRelicById(id);
+            if (!r) return null;
+            return (
+              <span
+                key={id}
+                title={`${r.name}: ${r.detail}`}
+                className="text-base leading-none cursor-default"
+              >
+                {r.icon}
+              </span>
+            );
+          })}
         </div>
       )}
     </div>

@@ -31,7 +31,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center p-8 text-zinc-100">
+    <main className="min-h-screen flex flex-col items-center justify-center p-8">
       <h1 className="text-2xl font-bold mb-6">Create account</h1>
       <form onSubmit={handleSubmit} className="w-full max-w-sm flex flex-col gap-4">
         <input
@@ -67,10 +67,10 @@ export default function RegisterPage() {
           {loading ? "Creating account..." : "Sign up"}
         </button>
       </form>
-      <p className="mt-4 text-zinc-400 text-sm">
+      <p className="mt-4 text-sm" style={{ color: "var(--text-muted)" }}>
         Already have an account? <Link href="/auth/signin" className="text-amber-500 hover:underline">Sign in</Link>
       </p>
-      <Link href="/" className="mt-4 text-zinc-500 text-sm hover:underline">Back to home</Link>
+      <Link href="/" className="mt-4 text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Back to home</Link>
     </main>
   );
 }

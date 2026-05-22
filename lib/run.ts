@@ -5,11 +5,20 @@ import {
   type RunMapData, type MapNode,
 } from "@/lib/map";
 import {
+  pickEventForNode, getEventById, getChoiceById, resolveEffect,
+  type EventDef,
+} from "@/lib/events";
+import { getBossForCategory } from "@/lib/bosses";
+import { pickRandomRelics, getRelicById, type RelicDef } from "@/lib/relics";
+import {
   LIVES_START,
   RUN_MONEY_START,
   MONEY_PER_CORRECT,
   SKIP_COST,
   QUESTIONS_PER_FLOOR,
+  BOSS_EXTRA_QUESTIONS,
+  questionsPerFloor,
+  waveStartDifficulty,
   STREAK_FOR_LIFE,
   DIFFICULTY_SCORE_MIN,
   DIFFICULTY_SCORE_MAX,
@@ -68,12 +77,18 @@ function computeEliminatedIndices(
 
 type QuestionRow = { id: string; text: string; options: unknown; correctIndex: number };
 
+export type WaveCompleteState = {
+  state: "wave_complete";
+  run: RunState;
+};
+
 export type RunState = {
   id: string;
   livesRemaining: number;
   runMoney: number;
   currentFloor: number;
   score: number;
+  wave: number;
   endedAt: Date | null;
   playerDifficulty: number;
   skipCostRun: number;
@@ -88,6 +103,7 @@ export type RunState = {
   freeMulligan: number;
   secondWindAvailable: boolean;
   floorCategoryOrder: string[];
+  relics: string[];
 };
 
 export type RunWithEncounter = {
@@ -98,9 +114,11 @@ export type RunWithEncounter = {
   totalEncountersThisFloor: number;
   question: { id: string; text: string; options: string[]; eliminatedIndices?: number[] };
   floorCategoryOrder: string[];
+  /** Present on the first question of a boss node — triggers the intro card in the UI. */
+  boss?: { name: string; title: string; dialogue: string; icon: string };
 };
 
-export type { RunMapData, MapNode };
+export type { RunMapData, MapNode, EventDef, RelicDef };
 
 export type RunMapState = {
   state: "map";
@@ -109,10 +127,19 @@ export type RunMapState = {
   availableNodeIds: string[];
 };
 
+export type RunEventState = {
+  state: "event";
+  run: RunState;
+  mapData: RunMapData;
+  event: EventDef;
+};
+
 export type EnterNodeResult =
   | { state: "encounter"; encounter: RunWithEncounter }
   | { state: "free_shop"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
-  | { state: "rest"; run: RunState; mapData: RunMapData; availableNodeIds: string[] };
+  | { state: "rest"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
+  | RunEventState
+  | WaveCompleteState;
 
 export type ShopItem =
   | "extra_life"
@@ -143,7 +170,6 @@ const SHOP_PRICES: Record<ShopItem, number> = {
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toRunState(run: any): RunState {
   return {
     id: run.id,
@@ -151,6 +177,7 @@ function toRunState(run: any): RunState {
     runMoney: run.runMoney,
     currentFloor: run.currentFloor,
     score: run.score,
+    wave: run.wave ?? 1,
     endedAt: run.endedAt,
     playerDifficulty: run.playerDifficulty,
     skipCostRun: run.skipCostRun ?? SKIP_COST,
@@ -165,32 +192,100 @@ function toRunState(run: any): RunState {
     freeMulligan: run.freeMulligan ?? 0,
     secondWindAvailable: run.secondWindAvailable ?? false,
     floorCategoryOrder: (run.floorCategoryOrder as string[]) ?? [],
+    relics: (run.relics as string[]) ?? [],
   };
 }
 
+/** Returns question IDs answered in the last `numRuns` completed runs for a user.
+ *  Used as a soft-exclude list to reduce cross-run repetition. */
+async function getRecentlySeenQuestionIds(userId: string, numRuns = 3): Promise<string[]> {
+  const recentRuns = await prisma.run.findMany({
+    where: { userId, endedAt: { not: null } },
+    orderBy: { endedAt: "desc" },
+    take: numRuns,
+    select: { id: true },
+  });
+  if (recentRuns.length === 0) return [];
+  const runIds = recentRuns.map((r) => r.id);
+  const answers = await prisma.answer.findMany({
+    where: { runId: { in: runIds } },
+    select: { questionId: true },
+    distinct: ["questionId"],
+  });
+  return answers.map((a) => a.questionId);
+}
+
+/** Pick the next question for a battle/elite node.
+ *
+ *  hardExcludeIds  — questions already seen THIS run (never repeat).
+ *  softExcludeIds  — questions seen in recent past runs (avoid if possible).
+ *
+ *  Cascade:
+ *    1. Right difficulty  + avoid hard & soft  (ideal)
+ *    2. Any  difficulty   + avoid hard & soft
+ *    3. Right difficulty  + avoid hard only     (soft-excluded allowed if pool is thin)
+ *    4. Any  difficulty   + avoid hard only     (last resort)
+ */
 async function getNextQuestion(
   categoryId: string,
   playerDifficulty: number,
-  excludeIds: string[]
+  hardExcludeIds: string[],
+  softExcludeIds: string[] = [],
 ): Promise<QuestionRow | null> {
   const min = Math.max(DIFFICULTY_SCORE_MIN, playerDifficulty - PLAYER_DIFFICULTY_WINDOW);
   const max = Math.min(DIFFICULTY_SCORE_MAX, playerDifficulty + PLAYER_DIFFICULTY_WINDOW);
-  const exclusion = excludeIds.length > 0 ? { notIn: excludeIds } : undefined;
 
+  const excl = (ids: string[]) => (ids.length > 0 ? { notIn: ids } : undefined);
+  const allExclude = Array.from(new Set([...hardExcludeIds, ...softExcludeIds]));
+
+  const sel = { id: true, text: true, options: true, correctIndex: true } as const;
+
+  // 1. Ideal: right difficulty + respect both excludes
   let candidates = await prisma.question.findMany({
-    where: { categoryId, difficultyScore: { gte: min, lte: max }, id: exclusion },
-    select: { id: true, text: true, options: true, correctIndex: true },
+    where: { categoryId, difficultyScore: { gte: min, lte: max }, id: excl(allExclude) },
+    select: sel,
   });
 
+  // 2. Any difficulty + respect both excludes
+  if (candidates.length === 0 && allExclude.length > 0) {
+    candidates = await prisma.question.findMany({
+      where: { categoryId, id: excl(allExclude) },
+      select: sel,
+    });
+  }
+
+  // 3. Right difficulty + hard exclude only (soft-excluded questions now OK)
+  if (candidates.length === 0 && softExcludeIds.length > 0) {
+    candidates = await prisma.question.findMany({
+      where: { categoryId, difficultyScore: { gte: min, lte: max }, id: excl(hardExcludeIds) },
+      select: sel,
+    });
+  }
+
+  // 4. Any difficulty + hard exclude only
   if (candidates.length === 0) {
     candidates = await prisma.question.findMany({
-      where: { categoryId, id: exclusion },
-      select: { id: true, text: true, options: true, correctIndex: true },
+      where: { categoryId, id: excl(hardExcludeIds) },
+      select: sel,
     });
   }
 
   if (candidates.length === 0) return null;
   return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+// ─── Relic / boss helpers ────────────────────────────────────────────────────
+
+function hasRelic(run: any, relicId: string): boolean {
+  return ((run.relics as string[]) ?? []).includes(relicId);
+}
+
+/** Number of questions for a given node type + wave. Boss nodes get extra. */
+function nodeQuestionsPerFloor(nodeType: string | undefined, wave: number): number {
+  if (nodeType === "boss") {
+    return Math.min(questionsPerFloor(wave) + BOSS_EXTRA_QUESTIONS, 8);
+  }
+  return questionsPerFloor(wave);
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -234,7 +329,7 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
 export async function getRunEncounter(
   runId: string,
   userId: string
-): Promise<RunWithEncounter | RunMapState | "game_over" | null> {
+): Promise<RunWithEncounter | RunMapState | RunEventState | "game_over" | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return "game_over";
 
@@ -249,18 +344,30 @@ export async function getRunEncounter(
     }
 
     const node = getNodeById(mapData, run.currentNodeId);
-    if (!node || !node.categoryId) return null;
+    if (!node) return null;
+
+    // Event node: player is mid-event (e.g. page refresh) — re-surface the same event.
+    if (node.type === "event") {
+      const event = pickEventForNode(node.id, node.themeSlug);
+      return { state: "event", run: toRunState(run), mapData, event };
+    }
+
+    if (!node.categoryId) return null;
 
     const floorNum = nodeToFloorNumber(node);
     const answersThisFloor = run.answers.filter((a) => a.floorIndex === floorNum);
     const encounterIndex = answersThisFloor.length;
-    if (encounterIndex >= QUESTIONS_PER_FLOOR) return null;
+    const qpf = nodeQuestionsPerFloor(node.type, run.wave ?? 1);
+    if (encounterIndex >= qpf) return null;
 
     const category = await prisma.category.findUnique({ where: { id: node.categoryId } });
     if (!category) return null;
 
-    const answeredIds = answersThisFloor.map((a) => a.questionId);
-    const q = await getNextQuestion(node.categoryId, run.playerDifficulty, answeredIds);
+    // Hard exclude: every question seen in this run (prevents any in-run repeat).
+    // Soft exclude: questions from recent past runs (reduces cross-run repetition).
+    const hardExcludeIds = run.answers.map((a) => a.questionId);
+    const softExcludeIds = await getRecentlySeenQuestionIds(run.userId, 3);
+    const q = await getNextQuestion(node.categoryId, run.playerDifficulty, hardExcludeIds, softExcludeIds);
     if (!q) return null;
 
     const options = Array.isArray(q.options) ? (q.options as string[]) : [];
@@ -270,14 +377,21 @@ export async function getRunEncounter(
       eliminatedIndices = computeEliminatedIndices(q.correctIndex, options.length, count, hashString(q.id + runId));
     }
 
+    // Attach boss definition on the first question of a boss node (triggers intro card in UI).
+    const boss =
+      node.type === "boss" && encounterIndex === 0
+        ? (() => { const b = getBossForCategory(category.slug); return { name: b.name, title: b.title, dialogue: b.dialogue, icon: b.icon }; })()
+        : undefined;
+
     return {
       run: toRunState(run),
       floorCategory: { id: category.id, slug: category.slug, name: category.name },
       monsterTitle: getMonsterTitle(category.slug, run.id, floorNum, encounterIndex),
       encounterIndex,
-      totalEncountersThisFloor: QUESTIONS_PER_FLOOR,
+      totalEncountersThisFloor: qpf,
       question: { id: q.id, text: q.text, options, eliminatedIndices },
       floorCategoryOrder: [],
+      boss,
     };
   }
 
@@ -293,8 +407,9 @@ export async function getRunEncounter(
   const encounterIndex = answersThisFloor.length;
   if (encounterIndex >= QUESTIONS_PER_FLOOR) return null;
 
-  const answeredIds = answersThisFloor.map((a) => a.questionId);
-  const q = await getNextQuestion(categoryId, run.playerDifficulty, answeredIds);
+  const hardExcludeIds = run.answers.map((a) => a.questionId);
+  const softExcludeIds = await getRecentlySeenQuestionIds(run.userId, 3);
+  const q = await getNextQuestion(categoryId, run.playerDifficulty, hardExcludeIds, softExcludeIds);
   if (!q) return null;
 
   const options = Array.isArray(q.options) ? (q.options as string[]) : [];
@@ -323,12 +438,13 @@ export async function getQuestionsForFloor(runId: string, userId: string): Promi
   const categoryId = order[run.currentFloor - 1];
   if (!categoryId) return null;
 
-  const answeredIds = run.answers.filter((a) => a.floorIndex === run.currentFloor).map((a) => a.questionId);
-  const remaining = QUESTIONS_PER_FLOOR - answeredIds.length;
+  const floorAnsweredIds = run.answers.filter((a) => a.floorIndex === run.currentFloor).map((a) => a.questionId);
+  const remaining = QUESTIONS_PER_FLOOR - floorAnsweredIds.length;
   if (remaining <= 0) return [];
 
   const questions: { id: string; text: string; options: string[] }[] = [];
-  const seen = new Set(answeredIds);
+  // Hard-exclude all questions seen anywhere in this run to avoid repeats.
+  const seen = new Set(run.answers.map((a) => a.questionId));
   for (let i = 0; i < remaining; i++) {
     const q = await getNextQuestion(categoryId, run.playerDifficulty, Array.from(seen));
     if (!q) break;
@@ -350,7 +466,7 @@ export async function recordAnswer(
   userId: string,
   questionId: string,
   selectedIndex: number
-): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter }> {
+): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[] }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { correct: false, livesRemaining: 0, runMoney: 0, next: "game_over" };
 
@@ -378,15 +494,26 @@ export async function recordAnswer(
   let freezeCount = run.freezeCount ?? 0;
   const moneyMultiplier = run.moneyMultiplier ?? 1.0;
   let secondWindAvailable = run.secondWindAvailable ?? false;
-  const streakThreshold = run.streakForLifeRun ?? STREAK_FOR_LIFE;
+  const streakThreshold = hasRelic(run, "vampires-fang") ? 2 : (run.streakForLifeRun ?? STREAK_FOR_LIFE);
   const diffStep = run.diffStepRun ?? PLAYER_DIFFICULTY_STEP;
   const moneyPerCorrect = run.moneyPerCorrectRun ?? MONEY_PER_CORRECT;
+  const maxLives = hasRelic(run, "relentless-spirit") || hasRelic(run, "cats-paw") ? 8 : 6; // cats-paw grant tracked separately
 
   if (correct) {
-    runMoney += Math.round(moneyPerCorrect * moneyMultiplier);
+    let earned = Math.round(moneyPerCorrect * moneyMultiplier);
+    // Relic: Double-Edged Sword — 2× all money
+    if (hasRelic(run, "double-edged-sword")) earned *= 2;
+    // Relic: Golden Fleece — 2× money on boss floors
+    if (hasRelic(run, "golden-fleece") && activeNode?.type === "boss") earned *= 2;
+    // Relic: Lucky Coin — 25% chance to double
+    if (hasRelic(run, "lucky-coin") && Math.random() < 0.25) earned *= 2;
+    // Relic: Scholar's Tome — +$8 flat
+    if (hasRelic(run, "scholars-tome")) earned += 8;
+    runMoney += earned;
+
     const recentAnswers = run.answers.slice(-(streakThreshold - 1));
     const onStreak = recentAnswers.length >= streakThreshold - 1 && recentAnswers.every((a) => a.correct && !a.skipped);
-    if (onStreak) livesRemaining = Math.min(livesRemaining + 1, 6);
+    if (onStreak) livesRemaining = Math.min(livesRemaining + 1, maxLives);
     playerDifficulty = Math.max(DIFFICULTY_SCORE_MIN, playerDifficulty - PLAYER_DIFFICULTY_STEP);
   } else {
     if (shieldCount > 0) {
@@ -394,12 +521,24 @@ export async function recordAnswer(
     } else {
       livesRemaining -= 1;
     }
-    if (freezeCount > 0) {
-      freezeCount -= 1;
-    } else {
-      playerDifficulty = Math.min(DIFFICULTY_SCORE_MAX, playerDifficulty + diffStep);
+    // Relic: Adrenaline Rush — wrong answers don't raise difficulty
+    if (!hasRelic(run, "adrenaline-rush")) {
+      if (freezeCount > 0) {
+        freezeCount -= 1;
+      } else {
+        playerDifficulty = Math.min(DIFFICULTY_SCORE_MAX, playerDifficulty + diffStep);
+      }
+    } else if (freezeCount > 0) {
+      freezeCount -= 1; // still consume freeze charges
     }
+    // Relic: Philosopher's Stone — earn $7 even on wrong answers
+    if (hasRelic(run, "philosophers-stone")) runMoney += 7;
+    // Relic: Double-Edged Sword — wrong answers cost $10
+    if (hasRelic(run, "double-edged-sword")) runMoney = Math.max(0, runMoney - 10);
   }
+
+  // Relic: Hardened Mind — difficulty cap at 70
+  if (hasRelic(run, "hardened-mind")) playerDifficulty = Math.min(playerDifficulty, 70);
 
   await prisma.answer.create({
     data: { runId, questionId, correct, skipped: false, floorIndex: activeFloor, encounterIndex },
@@ -411,7 +550,7 @@ export async function recordAnswer(
     : Math.min(DIFFICULTY_SCORE_MAX, (question.difficultyScore ?? 50) + DIFFICULTY_STEP);
   await prisma.question.update({ where: { id: questionId }, data: { difficultyScore: newQuestionDifficulty } });
 
-  // Second Wind: revive before checking game_over.
+  // Second Wind / Cat's Paw: revive before checking game_over.
   if (livesRemaining <= 0 && secondWindAvailable) {
     livesRemaining = 1;
     secondWindAvailable = false;
@@ -421,6 +560,12 @@ export async function recordAnswer(
     await endRun(runId, userId);
     return { correct, livesRemaining: 0, runMoney, next: "game_over" };
   }
+
+  // Determine if this is the last question of the node (for floor_clear routing + relic offers)
+  const qpf = nodeQuestionsPerFloor(activeNode?.type, run.wave ?? 1);
+  const isFloorClear = encounterIndex + 1 >= qpf;
+  const isRelicNode = activeNode?.type === "boss" || activeNode?.type === "elite";
+  const shouldOfferRelic = isFloorClear && isRelicNode;
 
   await prisma.run.update({
     where: { id: runId },
@@ -435,14 +580,16 @@ export async function recordAnswer(
       hasFiftyFifty: false,
       hasHint: false,
       secondWindAvailable,
+      ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
   });
 
-  if (encounterIndex + 1 >= QUESTIONS_PER_FLOOR) {
-    // Map-based: always return floor_clear so the UI can show the rest stop,
-    // then the player clicks Continue which calls completeCurrentNode → map.
+  if (isFloorClear) {
     if (mapData) {
-      return { correct, livesRemaining, runMoney, next: "floor_clear" };
+      const relicChoices = shouldOfferRelic
+        ? pickRandomRelics(3, (run.relics as string[]) ?? [])
+        : undefined;
+      return { correct, livesRemaining, runMoney, next: "floor_clear", relicChoices };
     }
     // Legacy linear
     const order = (run.floorCategoryOrder as string[]) ?? [];
@@ -467,7 +614,7 @@ export async function recordSkip(
   runId: string,
   userId: string,
   questionId: string
-): Promise<{ ok: boolean; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter }> {
+): Promise<{ ok: boolean; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[] }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { ok: false, next: "game_over" };
 
@@ -492,6 +639,11 @@ export async function recordSkip(
     data: { runId, questionId, correct: false, skipped: true, floorIndex: skipFloor, encounterIndex },
   });
 
+  const qpf = nodeQuestionsPerFloor(skipNode?.type, run.wave ?? 1);
+  const isFloorClear = encounterIndex + 1 >= qpf;
+  const isRelicNode = skipNode?.type === "boss" || skipNode?.type === "elite";
+  const shouldOfferRelic = isFloorClear && isRelicNode;
+
   await prisma.run.update({
     where: { id: runId },
     data: {
@@ -499,12 +651,16 @@ export async function recordSkip(
       freeMulligan: hasMulligan ? (run.freeMulligan ?? 0) - 1 : (run.freeMulligan ?? 0),
       hasFiftyFifty: false,
       hasHint: false,
+      ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
   });
 
-  if (encounterIndex + 1 >= QUESTIONS_PER_FLOOR) {
+  if (isFloorClear) {
     if (skipMapData) {
-      return { ok: true, next: "floor_clear" };
+      const relicChoices = shouldOfferRelic
+        ? pickRandomRelics(3, (run.relics as string[]) ?? [])
+        : undefined;
+      return { ok: true, next: "floor_clear", relicChoices };
     }
     const catOrder = (run.floorCategoryOrder as string[]) ?? [];
     if (run.currentFloor >= catOrder.length) {
@@ -530,7 +686,9 @@ export async function purchaseShopItem(
   const run = await prisma.run.findFirst({ where: { id: runId, userId } });
   if (!run || run.endedAt) return { ok: false, error: "Run not found" };
 
-  const cost = SHOP_PRICES[item];
+  const baseCost = SHOP_PRICES[item];
+  // Relic: Bargain Hunter — shop items 20% cheaper
+  const cost = hasRelic(run, "bargain-hunter") ? Math.floor(baseCost * 0.8) : baseCost;
   if (run.runMoney < cost) return { ok: false, error: "Not enough run money" };
 
   if (item === "fifty_fifty" && run.hasFiftyFifty) return { ok: false, error: "Already active" };
@@ -638,10 +796,6 @@ export async function enterNode(
       ...mapData,
       completedNodeIds: [...mapData.completedNodeIds, nodeId],
     };
-    if (isMapComplete(newMapData)) {
-      await completeRun(runId, userId);
-      return null; // caller checks for run_complete separately
-    }
     const updated = await prisma.run.update({
       where: { id: runId },
       data: {
@@ -651,6 +805,9 @@ export async function enterNode(
         currentNodeId: null,
       },
     });
+    if (isMapComplete(newMapData)) {
+      return { state: "wave_complete", run: toRunState(updated) };
+    }
     const newAvailable = getAvailableNodeIds(newMapData);
     return { state: "rest", run: toRunState(updated), mapData: newMapData, availableNodeIds: newAvailable };
   }
@@ -669,10 +826,26 @@ export async function enterNode(
     };
   }
 
-  // Battle / elite: set as active node, return first encounter
+  // Event node: set as active node, pick themed event, return event state
+  if (node.type === "event") {
+    const updated = await prisma.run.update({
+      where: { id: runId },
+      data: { currentNodeId: nodeId, currentFloor: floorNum },
+    });
+    const event = pickEventForNode(nodeId, node.themeSlug);
+    return { state: "event", run: toRunState(updated), mapData, event };
+  }
+
+  // Battle / elite / boss: set as active node, return first encounter.
+  // Relic: Iron Shield — automatically grant +1 shield on entry.
+  const runRelics = (run.relics as string[]) ?? [];
   await prisma.run.update({
     where: { id: runId },
-    data: { currentNodeId: nodeId, currentFloor: floorNum },
+    data: {
+      currentNodeId: nodeId,
+      currentFloor: floorNum,
+      ...(runRelics.includes("iron-shield") ? { shieldCount: { increment: 1 } } : {}),
+    },
   });
 
   const encounter = await getRunEncounter(runId, userId);
@@ -681,11 +854,11 @@ export async function enterNode(
 }
 
 /** Complete the current node (after battle rest-stop or leaving a free shop).
- *  Clears currentNodeId and returns map state. */
+ *  Clears currentNodeId and returns map state, or wave_complete if the whole map is done. */
 export async function completeCurrentNode(
   runId: string,
   userId: string
-): Promise<RunMapState | "run_complete" | null> {
+): Promise<RunMapState | WaveCompleteState | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId } });
   if (!run || run.endedAt) return null;
   if (!run.mapData || !run.currentNodeId) return null;
@@ -698,22 +871,21 @@ export async function completeCurrentNode(
     completedNodeIds: [...mapData.completedNodeIds, nodeId],
   };
 
-  if (isMapComplete(newMapData)) {
-    await completeRun(runId, userId);
-    return "run_complete";
-  }
-
   const updated = await prisma.run.update({
     where: { id: runId },
     data: { mapData: newMapData as object, currentNodeId: null },
   });
+
+  if (isMapComplete(newMapData)) {
+    return { state: "wave_complete", run: toRunState(updated) };
+  }
 
   const available = getAvailableNodeIds(newMapData);
   return { state: "map", run: toRunState(updated), mapData: newMapData, availableNodeIds: available };
 }
 
 /** Legacy: advance to the next floor linearly (kept for old runs without mapData). */
-export async function startNextFloor(runId: string, userId: string): Promise<RunWithEncounter | RunMapState | "run_complete" | null> {
+export async function startNextFloor(runId: string, userId: string): Promise<RunWithEncounter | RunMapState | WaveCompleteState | "run_complete" | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId } });
   if (!run || run.endedAt) return null;
 
@@ -734,6 +906,103 @@ export async function startNextFloor(runId: string, userId: string): Promise<Run
   const enc = await getRunEncounter(runId, userId);
   if (!enc || enc === "game_over" || !("question" in enc)) return null;
   return enc;
+}
+
+/** Resolve a player's choice in an event room. */
+export async function resolveEventChoice(
+  runId: string,
+  userId: string,
+  eventId: string,
+  choiceId: string
+): Promise<{ message: string; mapState: RunMapState | WaveCompleteState } | "game_over" | null> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return "game_over";
+  if (!run.mapData || !run.currentNodeId) return null;
+
+  const mapData = run.mapData as unknown as RunMapData;
+  const node = getNodeById(mapData, run.currentNodeId);
+  if (!node || node.type !== "event") return null;
+
+  // Validate that the submitted eventId matches the node's actual event (anti-cheat)
+  const expectedEvent = pickEventForNode(node.id, node.themeSlug);
+  if (expectedEvent.id !== eventId) return null;
+
+  const event = getEventById(eventId);
+  if (!event) return null;
+
+  const choice = getChoiceById(event, choiceId);
+  if (!choice) return null;
+
+  // Validate requirements
+  const cost = choice.cost ?? 0;
+  if (run.runMoney < cost) return null;
+  if (choice.requireMinLives !== undefined && run.livesRemaining < choice.requireMinLives) return null;
+
+  // Resolve the effect
+  const fallback = choice.outcomeMessage ?? "You continue on your way.";
+  const outcome = resolveEffect(choice.effect, fallback);
+
+  // Compute new stats
+  const newMoney = Math.max(0, run.runMoney - cost + outcome.moneyDelta);
+  const newLives = Math.min(6, Math.max(0, run.livesRemaining + outcome.livesDelta));
+
+  if (newLives <= 0) {
+    await endRun(runId, userId);
+    return "game_over";
+  }
+
+  const newDifficulty =
+    outcome.difficultySet !== null
+      ? outcome.difficultySet
+      : Math.min(100, Math.max(1, run.playerDifficulty + outcome.difficultyDelta));
+
+  // Mark node complete
+  const newMapData: RunMapData = {
+    ...mapData,
+    completedNodeIds: [...mapData.completedNodeIds, run.currentNodeId],
+  };
+
+  if (isMapComplete(newMapData)) {
+    // Persist stat changes and mark node complete — wave_complete instead of ending the run
+    const updated = await prisma.run.update({
+      where: { id: runId },
+      data: {
+        runMoney: newMoney,
+        livesRemaining: newLives,
+        playerDifficulty: newDifficulty,
+        shieldCount:      (run.shieldCount ?? 0) + outcome.shieldAdd,
+        freezeCount:      (run.freezeCount ?? 0) + outcome.freezeAdd,
+        freeMulligan:     (run.freeMulligan ?? 0) + outcome.mulliganAdd,
+        hasFiftyFifty:    run.hasFiftyFifty || outcome.grantFiftyFifty,
+        hasHint:          run.hasHint || outcome.grantHint,
+        mapData:          newMapData as object,
+        currentNodeId:    null,
+      },
+    });
+    return { message: outcome.message, mapState: { state: "wave_complete", run: toRunState(updated) } };
+  }
+
+  const updated = await prisma.run.update({
+    where: { id: runId },
+    data: {
+      runMoney: newMoney,
+      livesRemaining: newLives,
+      playerDifficulty: newDifficulty,
+      shieldCount:      (run.shieldCount ?? 0) + outcome.shieldAdd,
+      freezeCount:      (run.freezeCount ?? 0) + outcome.freezeAdd,
+      freeMulligan:     (run.freeMulligan ?? 0) + outcome.mulliganAdd,
+      hasFiftyFifty:    run.hasFiftyFifty || outcome.grantFiftyFifty,
+      hasHint:          run.hasHint || outcome.grantHint,
+      mapData:          newMapData as object,
+      currentNodeId:    null,
+    },
+  });
+
+  const available = getAvailableNodeIds(newMapData);
+  return {
+    message: outcome.message,
+    mapState: { state: "map", run: toRunState(updated), mapData: newMapData, availableNodeIds: available },
+  };
 }
 
 export async function completeRun(runId: string, userId: string): Promise<void> {
@@ -760,4 +1029,86 @@ export async function endRun(runId: string, userId: string): Promise<void> {
   if (toAdd > 0) {
     await prisma.user.update({ where: { id: userId }, data: { collectionMoney: { increment: toAdd } } });
   }
+}
+
+/** Advance to the next wave: bigger map, harder starting difficulty, keep all run stats. */
+export async function advanceWave(runId: string, userId: string): Promise<RunMapState | null> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return null;
+
+  const allCategories = await prisma.category.findMany({
+    select: { id: true, slug: true, name: true },
+    orderBy: { slug: "asc" },
+  });
+  const newWave = (run.wave ?? 1) + 1;
+  const mapData = generateMap(allCategories, newWave);
+
+  // Relic: Relentless Spirit — gain +1 life on wave progression
+  const bonusLife = ((run.relics as string[]) ?? []).includes("relentless-spirit") ? 1 : 0;
+
+  const updated = await prisma.run.update({
+    where: { id: runId },
+    data: {
+      wave: newWave,
+      mapData: mapData as object,
+      currentNodeId: null,
+      playerDifficulty: waveStartDifficulty(newWave),
+      currentFloor: 1,
+      ...(bonusLife > 0 ? { livesRemaining: Math.min(run.livesRemaining + bonusLife, 8) } : {}),
+    },
+  });
+
+  const available = getAvailableNodeIds(mapData);
+  return { state: "map", run: toRunState(updated), mapData, availableNodeIds: available };
+}
+
+/** Claim a relic from the pending offer after clearing a boss or elite node. */
+export async function pickRelic(
+  runId: string,
+  userId: string,
+  relicId: string,
+): Promise<{ ok: boolean; error?: string; run?: RunState }> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return { ok: false, error: "Run not found" };
+
+  // Validate: must have a pending relic offer for the current node
+  if (!run.pendingRelicNodeId) return { ok: false, error: "No relic offer pending" };
+
+  // Validate: relicId is a real relic
+  const relic = getRelicById(relicId);
+  if (!relic) return { ok: false, error: "Unknown relic" };
+
+  // Validate: player doesn't already own it
+  const owned = (run.relics as string[]) ?? [];
+  if (owned.includes(relicId)) return { ok: false, error: "Already owned" };
+
+  const newRelics = [...owned, relicId];
+
+  // Special: Cat's Paw grants the Second Wind effect
+  const grantSecondWind = relicId === "cats-paw" && !run.secondWindAvailable;
+
+  const updated = await prisma.run.update({
+    where: { id: runId },
+    data: {
+      relics: newRelics,
+      pendingRelicNodeId: null,
+      ...(grantSecondWind ? { secondWindAvailable: true } : {}),
+    },
+  });
+
+  return { ok: true, run: toRunState(updated) };
+}
+
+/** Cash out at end of wave: award 100% of run money to collection, end the run. */
+export async function cashOut(runId: string, userId: string): Promise<{ ok: boolean; collectionMoneyEarned: number }> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return { ok: false, collectionMoneyEarned: 0 };
+
+  const toAdd = run.runMoney; // 100% conversion — the reward for completing a wave
+  await prisma.run.update({ where: { id: runId }, data: { endedAt: new Date(), won: true } });
+  if (toAdd > 0) {
+    await prisma.user.update({ where: { id: userId }, data: { collectionMoney: { increment: toAdd } } });
+  }
+
+  return { ok: true, collectionMoneyEarned: toAdd };
 }

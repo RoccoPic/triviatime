@@ -27,7 +27,7 @@ function SignInForm() {
   }
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center p-8 text-zinc-100">
+    <main className="min-h-screen flex flex-col items-center justify-center p-8">
       <h1 className="text-2xl font-bold mb-6">Sign in</h1>
       <form onSubmit={handleSubmit} className="w-full max-w-sm flex flex-col gap-4">
         <input
@@ -55,12 +55,12 @@ function SignInForm() {
           {loading ? "Signing in..." : "Sign in"}
         </button>
       </form>
-      <p className="mt-4 text-zinc-400 text-sm">
+      <p className="mt-4 text-sm" style={{ color: "var(--text-muted)" }}>
         No account? <Link href="/auth/register" className="text-amber-500 hover:underline">Sign up</Link>
       </p>
       <div className="mt-4 flex gap-4">
-        <Link href="/settings" className="text-zinc-500 text-sm hover:underline">Settings</Link>
-        <Link href="/" className="text-zinc-500 text-sm hover:underline">Back to home</Link>
+        <Link href="/settings" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Settings</Link>
+        <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Back to home</Link>
       </div>
     </main>
   );
@@ -68,7 +68,7 @@ function SignInForm() {
 
 export default function SignInPage() {
   return (
-    <Suspense fallback={<main className="min-h-screen flex items-center justify-center text-zinc-400">Loading...</main>}>
+    <Suspense fallback={<main className="min-h-screen flex items-center justify-center">Loading...</main>}>
       <SignInForm />
     </Suspense>
   );

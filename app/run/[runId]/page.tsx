@@ -5,8 +5,8 @@ import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import { RunHUD } from "@/components/RunHUD";
-import { RunMap } from "@/components/RunMap";
-import type { RunState } from "@/lib/run";
+import { RunMap, TOKEN_MOVE_MS } from "@/components/RunMap";
+import type { RunState, EventDef, RelicDef } from "@/lib/run";
 import type { RunMapData } from "@/lib/map";
 
 // ── Local types ───────────────────────────────────────────────────────────────
@@ -18,6 +18,7 @@ type EncounterData = {
   encounterIndex: number;
   totalEncountersThisFloor: number;
   question: { id: string; text: string; options: string[]; eliminatedIndices?: number[] };
+  boss?: { name: string; title: string; dialogue: string; icon: string };
 };
 
 type Screen =
@@ -25,8 +26,11 @@ type Screen =
   | { id: "map"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
   | { id: "encounter"; data: EncounterData }
   | { id: "floor_clear"; run: RunState; mapData: RunMapData; floorCategory: { name: string } }
+  | { id: "relic_pick"; run: RunState; choices: RelicDef[]; mapData: RunMapData; floorCategory: { name: string } }
   | { id: "free_shop"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
   | { id: "rest"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
+  | { id: "event"; run: RunState; event: EventDef }
+  | { id: "wave_complete"; run: RunState }
   | { id: "game_over" };
 
 type ShopItemDef = {
@@ -69,10 +73,18 @@ export default function RunEncounterPage() {
   const [peekResult, setPeekResult] = useState<string | null>(null);
   const [shopError, setShopError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<{ correct: boolean; shieldAbsorbed?: boolean } | null>(null);
+  // Boss intro: dismissed per encounter (reset when screen changes away from encounter)
+  const [bossIntroAcked, setBossIntroAcked] = useState(false);
 
   // Ref that always holds the most recent mapData so we can access it in
   // submitAnswer / payToSkip even though those API calls don't return mapData.
   const mapDataRef = useRef<RunMapData | null>(null);
+
+  // Banner shown on the map screen after returning from an event room.
+  const [mapNotification, setMapNotification] = useState<string | null>(null);
+
+  // Node the player just clicked — drives the dragon token animation before screen change.
+  const [enteringNodeId, setEnteringNodeId] = useState<string | null>(null);
 
   // ── Initial load ────────────────────────────────────────────────────────────
   const fetchState = useCallback(async () => {
@@ -89,6 +101,10 @@ export default function RunEncounterPage() {
       setScreen({ id: "map", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
       return;
     }
+    if (data.state === "event") {
+      setScreen({ id: "event", run: data.run, event: data.event });
+      return;
+    }
     if (data.run && data.question) {
       setScreen({ id: "encounter", data });
     }
@@ -99,22 +115,38 @@ export default function RunEncounterPage() {
     if (status === "authenticated" && runId) fetchState();
   }, [status, runId, fetchState, router]);
 
+  // Reset boss intro acknowledgement whenever we leave the encounter screen
+  useEffect(() => {
+    if (screen.id !== "encounter") setBossIntroAcked(false);
+  }, [screen.id]);
+
   // ── Enter a map node ────────────────────────────────────────────────────────
   async function enterNode(nodeId: string) {
-    if (busy || screen.id !== "map") return;
+    if (busy || (screen.id !== "map" && screen.id !== "rest")) return;
     setBusy(true);
     setLastResult(null);
+    setMapNotification(null);
+
+    // Start the dragon token gliding to the selected node immediately.
+    setEnteringNodeId(nodeId);
+
     try {
-      const res = await fetch("/api/run/enter-node", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId, nodeId }),
-      });
+      // Fire the API call and the animation delay in parallel.
+      // The screen only transitions once BOTH are done, so the player
+      // always sees the token reach the node before the view changes.
+      const [res] = await Promise.all([
+        fetch("/api/run/enter-node", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ runId, nodeId }),
+        }),
+        new Promise<void>((r) => setTimeout(r, TOKEN_MOVE_MS)),
+      ]);
+
       const data = await res.json();
       if (!res.ok || data.next === "game_over") { setScreen({ id: "game_over" }); return; }
 
       if (data.state === "encounter") {
-        // mapDataRef stays as-is — it was set when we were on the map screen
         setScreen({ id: "encounter", data: data.encounter });
       } else if (data.state === "free_shop") {
         mapDataRef.current = data.mapData;
@@ -122,8 +154,13 @@ export default function RunEncounterPage() {
       } else if (data.state === "rest") {
         mapDataRef.current = data.mapData;
         setScreen({ id: "rest", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
+      } else if (data.state === "event") {
+        setScreen({ id: "event", run: data.run, event: data.event });
+      } else if (data.state === "wave_complete") {
+        setScreen({ id: "wave_complete", run: data.run });
       }
     } finally {
+      setEnteringNodeId(null);
       setBusy(false);
     }
   }
@@ -147,6 +184,10 @@ export default function RunEncounterPage() {
       });
       const result = await res.json();
       if (result.next === "run_complete") { router.push(`/run/${runId}/game-over`); return; }
+      if (result.next === "wave_complete") {
+        setScreen({ id: "wave_complete", run: result.run });
+        return;
+      }
       if (result.next === "map") {
         mapDataRef.current = result.mapData;
         setScreen({ id: "map", run: result.run, mapData: result.mapData, availableNodeIds: result.availableNodeIds });
@@ -154,6 +195,93 @@ export default function RunEncounterPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // ── Resolve event room choice ────────────────────────────────────────────────
+  async function resolveEvent(eventId: string, choiceId: string) {
+    if (screen.id !== "event" || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/run/event-choice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId, eventId, choiceId }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.next === "game_over") { setScreen({ id: "game_over" }); return; }
+      if (data.next === "wave_complete") {
+        setScreen({ id: "wave_complete", run: data.run });
+        return;
+      }
+      if (data.next === "map") {
+        mapDataRef.current = data.mapData;
+        setMapNotification(data.message ?? null);
+        setScreen({ id: "map", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Wave complete — Progress or Cash Out ────────────────────────────────────
+  async function advanceWaveAction() {
+    if (screen.id !== "wave_complete" || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/run/advance-wave", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId }),
+      });
+      const data = await res.json();
+      if (!res.ok) return;
+      mapDataRef.current = data.mapData;
+      setScreen({ id: "map", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cashOutAction() {
+    if (screen.id !== "wave_complete" || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/run/cash-out", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId }),
+      });
+      if (!res.ok) return;
+      router.push(`/run/${runId}/game-over`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Relic pick ──────────────────────────────────────────────────────────────
+  async function pickRelicAction(relicId: string) {
+    if (screen.id !== "relic_pick" || busy) return;
+    const { mapData, floorCategory } = screen;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/run/pick-relic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId, relicId }),
+      });
+      const data = await res.json();
+      if (!res.ok) return;
+      const updatedRun = data.run ?? screen.run;
+      setScreen({ id: "floor_clear", run: updatedRun, mapData, floorCategory });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function skipRelicPick() {
+    if (screen.id !== "relic_pick") return;
+    const { run, mapData, floorCategory } = screen;
+    setScreen({ id: "floor_clear", run, mapData, floorCategory });
   }
 
   // ── Answer ──────────────────────────────────────────────────────────────────
@@ -179,12 +307,14 @@ export default function RunEncounterPage() {
       setLastResult({ correct: result.correct, shieldAbsorbed });
 
       if (result.next === "floor_clear") {
-        setScreen({
-          id: "floor_clear",
-          run: { ...data.run, livesRemaining: result.livesRemaining, runMoney: result.runMoney, hasFiftyFifty: false, hasHint: false },
-          mapData: mapDataRef.current ?? ({} as RunMapData),
-          floorCategory: data.floorCategory,
-        });
+        const updatedRun = { ...data.run, livesRemaining: result.livesRemaining, runMoney: result.runMoney, hasFiftyFifty: false, hasHint: false };
+        const floorCategory = data.floorCategory;
+        const mapData = mapDataRef.current ?? ({} as RunMapData);
+        if (result.relicChoices?.length) {
+          setScreen({ id: "relic_pick", run: updatedRun, choices: result.relicChoices, mapData, floorCategory });
+        } else {
+          setScreen({ id: "floor_clear", run: updatedRun, mapData, floorCategory });
+        }
         return;
       }
 
@@ -216,7 +346,12 @@ export default function RunEncounterPage() {
           runMoney: hasMulligan ? data.run.runMoney : data.run.runMoney - data.run.skipCostRun,
           freeMulligan: hasMulligan ? data.run.freeMulligan - 1 : data.run.freeMulligan,
         };
-        setScreen({ id: "floor_clear", run: newRun, mapData: mapDataRef.current ?? ({} as RunMapData), floorCategory: data.floorCategory });
+        const mapData = mapDataRef.current ?? ({} as RunMapData);
+        if (result.relicChoices?.length) {
+          setScreen({ id: "relic_pick", run: newRun, choices: result.relicChoices, mapData, floorCategory: data.floorCategory });
+        } else {
+          setScreen({ id: "floor_clear", run: newRun, mapData, floorCategory: data.floorCategory });
+        }
         return;
       }
       if (result.run) setScreen({ id: "encounter", data: result.run });
@@ -253,15 +388,15 @@ export default function RunEncounterPage() {
   // ── Render ──────────────────────────────────────────────────────────────────
 
   if (screen.id === "loading") {
-    return <main className="min-h-screen flex items-center justify-center text-zinc-400">Loading run…</main>;
+    return <main className="min-h-screen flex items-center justify-center">Loading run…</main>;
   }
 
   if (screen.id === "game_over") {
     return (
-      <main className="min-h-screen flex flex-col items-center justify-center p-8 text-zinc-100">
+      <main className="min-h-screen flex flex-col items-center justify-center p-8">
         <h1 className="text-2xl font-bold mb-4">Game Over</h1>
         <Link href={`/run/${runId}/game-over`} className="text-amber-500 hover:underline">View run summary</Link>
-        <Link href="/run" className="mt-4 text-zinc-500 hover:underline">Start a new run</Link>
+        <Link href="/run" className="mt-4 hover:underline" style={{ color: "var(--text-muted)" }}>Start a new run</Link>
       </main>
     );
   }
@@ -273,25 +408,31 @@ export default function RunEncounterPage() {
     const diff = difficultyInfo(run.playerDifficulty);
 
     return (
-      <main className="min-h-screen p-4 md:p-8 text-zinc-100">
+      <main className="min-h-screen p-4 md:p-8">
         <div className="max-w-3xl mx-auto flex flex-col gap-4">
           {/* Stats bar */}
           <div className="flex items-center justify-between flex-wrap gap-3 px-1">
             <div className="flex gap-6">
               <div className="text-center">
                 <p className="text-xl font-bold text-red-400">{run.livesRemaining}</p>
-                <p className="text-zinc-500 text-xs">Lives</p>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Lives</p>
               </div>
               <div className="text-center">
                 <p className="text-xl font-bold text-amber-400">${run.runMoney}</p>
-                <p className="text-zinc-500 text-xs">Run $</p>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Run $</p>
               </div>
               <div className="text-center">
                 <p className={`text-xl font-bold ${diff.className}`}>{diff.label}</p>
-                <p className="text-zinc-500 text-xs">Difficulty</p>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Difficulty</p>
               </div>
+              {run.wave > 1 && (
+                <div className="text-center">
+                  <p className="text-xl font-bold text-blue-400">{run.wave}</p>
+                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>Wave</p>
+                </div>
+              )}
             </div>
-            <Link href="/" className="text-zinc-500 text-sm hover:underline">Exit</Link>
+            <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Exit</Link>
           </div>
 
           {/* Rest notification */}
@@ -301,8 +442,15 @@ export default function RunEncounterPage() {
             </div>
           )}
 
+          {/* Event outcome notification */}
+          {!isRest && mapNotification && (
+            <div className="rounded-lg border border-purple-500/40 bg-purple-900/20 px-4 py-3 text-purple-300 text-sm font-medium">
+              {mapNotification}
+            </div>
+          )}
+
           <div>
-            <h2 className="text-lg font-semibold mb-3 text-zinc-300">
+            <h2 className="text-lg font-semibold mb-3">
               {availableNodeIds.length === 0
                 ? "Run complete — well done!"
                 : "Choose your next path"}
@@ -312,6 +460,7 @@ export default function RunEncounterPage() {
               availableNodeIds={availableNodeIds}
               onSelect={enterNode}
               selecting={busy}
+              enteringNodeId={enteringNodeId ?? undefined}
             />
           </div>
 
@@ -328,18 +477,96 @@ export default function RunEncounterPage() {
     );
   }
 
+  // ── Event room ───────────────────────────────────────────────────────────────
+  if (screen.id === "event") {
+    const { run, event } = screen;
+    return (
+      <main className="min-h-screen p-4 md:p-8">
+        <div className="max-w-2xl mx-auto flex flex-col gap-4">
+
+          {/* Header card */}
+          <div className="rounded-xl border border-purple-600/40 bg-zinc-900/60 p-6 text-zinc-100">
+            <p className="text-purple-400 text-xs font-semibold uppercase tracking-widest mb-1">
+              ? Event Room
+            </p>
+            <h2 className="text-2xl font-bold mb-4">{event.title}</h2>
+            <p className="text-zinc-200 text-sm leading-relaxed italic">{event.description}</p>
+            <div className="flex gap-8 mt-4 pt-4 border-t border-zinc-800">
+              <div className="text-center">
+                <p className="text-lg font-bold text-red-400">{run.livesRemaining}</p>
+                <p className="text-zinc-300 text-xs">Lives</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold text-amber-400">${run.runMoney}</p>
+                <p className="text-zinc-300 text-xs">Run $</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Choice buttons */}
+          <div className="flex flex-col gap-3">
+            {event.choices.map((choice) => {
+              const canAfford = (choice.cost ?? 0) === 0 || run.runMoney >= (choice.cost ?? 0);
+              const hasLives  = choice.requireMinLives == null || run.livesRemaining >= choice.requireMinLives;
+              const isDisabled = !canAfford || !hasLives || busy;
+
+              return (
+                <button
+                  key={choice.id}
+                  onClick={() => resolveEvent(event.id, choice.id)}
+                  disabled={isDisabled}
+                  className="text-left p-4 rounded-xl border border-zinc-700 bg-zinc-800/50 hover:border-purple-500/40 hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm">{choice.label}</p>
+                      <p className="text-zinc-200 text-xs mt-0.5">{choice.description}</p>
+                      {!canAfford && (
+                        <p className="text-red-400/70 text-xs mt-1">
+                          Requires ${choice.cost}
+                        </p>
+                      )}
+                      {!hasLives && (
+                        <p className="text-red-400/70 text-xs mt-1">
+                          Requires {choice.requireMinLives} lives
+                        </p>
+                      )}
+                    </div>
+                    {(choice.cost ?? 0) > 0 && (
+                      <span className={`shrink-0 font-bold text-sm ${canAfford ? "text-amber-400" : "text-zinc-600"}`}>
+                        ${choice.cost}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {busy && (
+            <p className="text-center text-sm animate-pulse" style={{ color: "var(--text-muted)" }}>Resolving…</p>
+          )}
+
+          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>
+            Exit to home
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
   // ── Free shop node ──────────────────────────────────────────────────────────
   if (screen.id === "free_shop") {
     const { run } = screen;
     return (
-      <main className="min-h-screen p-4 md:p-8 text-zinc-100">
+      <main className="min-h-screen p-4 md:p-8">
         <div className="max-w-2xl mx-auto flex flex-col gap-4">
-          <div className="rounded-xl border border-green-600/40 bg-zinc-900/50 p-6 text-center">
+          <div className="rounded-xl border border-green-600/40 bg-zinc-900/50 p-6 text-center text-zinc-100">
             <p className="text-green-400 text-sm font-medium uppercase tracking-widest mb-1">✦ Shop Node</p>
             <h2 className="text-2xl font-bold mb-4">Free Shop</h2>
             <div className="flex justify-center gap-10">
-              <div><p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p><p className="text-zinc-500 text-sm mt-1">Lives</p></div>
-              <div><p className="text-2xl font-bold text-amber-400">${run.runMoney}</p><p className="text-zinc-500 text-sm mt-1">Run $</p></div>
+              <div><p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p><p className="text-zinc-300 text-sm mt-1">Lives</p></div>
+              <div><p className="text-2xl font-bold text-amber-400">${run.runMoney}</p><p className="text-zinc-300 text-sm mt-1">Run $</p></div>
             </div>
           </div>
 
@@ -358,7 +585,7 @@ export default function RunEncounterPage() {
           >
             {busy ? "Loading…" : "Continue to map →"}
           </button>
-          <Link href="/" className="text-zinc-500 text-sm hover:underline text-center">Exit to home</Link>
+          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>Exit to home</Link>
         </div>
       </main>
     );
@@ -369,15 +596,15 @@ export default function RunEncounterPage() {
     const { run, floorCategory } = screen;
     const diff = difficultyInfo(run.playerDifficulty);
     return (
-      <main className="min-h-screen p-4 md:p-8 text-zinc-100">
+      <main className="min-h-screen p-4 md:p-8">
         <div className="max-w-2xl mx-auto flex flex-col gap-4">
-          <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-center">
+          <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-center text-zinc-100">
             <p className="text-amber-400 text-sm font-medium uppercase tracking-widest mb-1">Node cleared</p>
             <h2 className="text-3xl font-bold mb-4">{floorCategory.name}</h2>
             <div className="flex justify-center gap-10">
-              <div><p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p><p className="text-zinc-500 text-sm mt-1">Lives</p></div>
-              <div><p className="text-2xl font-bold text-amber-400">${run.runMoney}</p><p className="text-zinc-500 text-sm mt-1">Run $</p></div>
-              <div><p className={`text-2xl font-bold ${diff.className}`}>{diff.label}</p><p className="text-zinc-500 text-sm mt-1">Difficulty</p></div>
+              <div><p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p><p className="text-zinc-300 text-sm mt-1">Lives</p></div>
+              <div><p className="text-2xl font-bold text-amber-400">${run.runMoney}</p><p className="text-zinc-300 text-sm mt-1">Run $</p></div>
+              <div><p className={`text-2xl font-bold ${diff.className}`}>{diff.label}</p><p className="text-zinc-300 text-sm mt-1">Difficulty</p></div>
             </div>
             {lastResult && (
               <p className={`mt-3 text-sm font-medium ${lastResult.correct ? "text-green-400" : "text-red-400"}`}>
@@ -401,7 +628,125 @@ export default function RunEncounterPage() {
           >
             {busy ? "Loading…" : "Back to map →"}
           </button>
-          <Link href="/" className="text-zinc-500 text-sm hover:underline text-center">Exit to home</Link>
+          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>Exit to home</Link>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Relic pick ───────────────────────────────────────────────────────────────
+  if (screen.id === "relic_pick") {
+    const { run, choices } = screen;
+    return (
+      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+        <div className="max-w-xl w-full mx-auto flex flex-col gap-6">
+          {/* Header */}
+          <div className="text-center">
+            <p className="text-amber-400 text-xs font-semibold uppercase tracking-widest mb-1">
+              Node Cleared
+            </p>
+            <h2 className="text-3xl font-bold text-zinc-100 mb-1">Choose a Relic</h2>
+            <p className="text-zinc-400 text-sm">Pick one to carry through the rest of your run</p>
+          </div>
+
+          {/* Relic cards */}
+          <div className="flex flex-col gap-3">
+            {choices.map((relic) => (
+              <button
+                key={relic.id}
+                onClick={() => pickRelicAction(relic.id)}
+                disabled={busy}
+                className="text-left p-5 rounded-xl border border-zinc-700 bg-zinc-900/60 hover:border-amber-500/60 hover:bg-zinc-800/70 disabled:opacity-50 disabled:cursor-not-allowed transition group"
+              >
+                <div className="flex items-start gap-4">
+                  <span className="text-4xl leading-none shrink-0">{relic.icon}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-zinc-100 text-base group-hover:text-amber-300 transition">
+                      {relic.name}
+                    </p>
+                    <p className="text-zinc-300 text-sm mt-1">{relic.description}</p>
+                    <p className="text-zinc-500 text-xs mt-1 italic">{relic.detail}</p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {/* Stats + skip */}
+          <div className="flex items-center justify-between px-1">
+            <div className="flex gap-6 text-sm">
+              <span className="text-red-400 font-bold">{run.livesRemaining} ❤</span>
+              <span className="text-amber-400 font-bold">${run.runMoney}</span>
+            </div>
+            <button
+              onClick={skipRelicPick}
+              disabled={busy}
+              className="text-zinc-500 hover:text-zinc-300 text-sm transition disabled:opacity-40"
+            >
+              Skip →
+            </button>
+          </div>
+
+          {busy && (
+            <p className="text-center text-sm animate-pulse text-zinc-500">Claiming relic…</p>
+          )}
+        </div>
+      </main>
+    );
+  }
+
+  // ── Wave complete ─────────────────────────────────────────────────────────────
+  if (screen.id === "wave_complete") {
+    const { run } = screen;
+    return (
+      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+        <div className="max-w-md w-full mx-auto flex flex-col gap-6">
+          {/* Trophy card */}
+          <div className="rounded-xl border border-amber-500/60 bg-zinc-900/60 p-8 text-center text-zinc-100">
+            <div className="text-5xl mb-3">🏆</div>
+            <p className="text-amber-400 text-xs font-semibold uppercase tracking-widest mb-1">Wave {run.wave} Complete!</p>
+            <h2 className="text-3xl font-bold mb-2">Map Cleared</h2>
+            <p className="text-zinc-300 text-sm mb-6">What will you do?</p>
+            <div className="flex justify-center gap-10">
+              <div>
+                <p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p>
+                <p className="text-zinc-300 text-sm mt-1">Lives</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-amber-400">${run.runMoney}</p>
+                <p className="text-zinc-300 text-sm mt-1">Run $</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-blue-400">{run.score}</p>
+                <p className="text-zinc-300 text-sm mt-1">Score</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Choice buttons */}
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={advanceWaveAction}
+              disabled={busy}
+              className="w-full px-6 py-4 rounded-xl bg-amber-600 hover:bg-amber-500 font-bold text-lg text-white disabled:opacity-50 transition"
+            >
+              {busy ? "Loading…" : `⚔ Progress to Wave ${run.wave + 1}`}
+            </button>
+            <p className="text-center text-zinc-400 text-xs -mt-1">
+              Bigger map · harder questions · more questions per battle
+            </p>
+
+            <button
+              onClick={cashOutAction}
+              disabled={busy}
+              className="w-full px-6 py-4 rounded-xl border border-green-500/40 bg-green-900/20 hover:bg-green-900/40 font-bold text-lg text-green-300 disabled:opacity-50 transition mt-2"
+            >
+              {busy ? "Loading…" : `✦ Cash Out — keep $${run.runMoney}`}
+            </button>
+            <p className="text-center text-zinc-400 text-xs -mt-1">
+              Convert all ${run.runMoney} to collection money · end the run
+            </p>
+          </div>
         </div>
       </main>
     );
@@ -413,8 +758,53 @@ export default function RunEncounterPage() {
   const hasMulligan = run.freeMulligan > 0;
   const canSkip = hasMulligan || run.runMoney >= run.skipCostRun;
 
+  // Show boss intro card on the very first question of a boss node
+  if (enc.boss && encounterIndex === 0 && !bossIntroAcked) {
+    const boss = enc.boss;
+    return (
+      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+        <div className="max-w-lg w-full mx-auto flex flex-col gap-6">
+          <div className="rounded-xl border border-red-500/50 bg-zinc-900/60 p-8 text-center text-zinc-100">
+            <div className="text-6xl mb-4">{boss.icon}</div>
+            <p className="text-red-400 text-xs font-semibold uppercase tracking-widest mb-1">
+              Boss Encounter · {floorCategory.name}
+            </p>
+            <h2 className="text-3xl font-bold mb-1">{boss.name}</h2>
+            <p className="text-zinc-400 text-sm mb-6 italic">{boss.title}</p>
+            <blockquote className="border-l-2 border-red-500/40 pl-4 text-zinc-200 text-sm leading-relaxed italic text-left mb-6">
+              &ldquo;{boss.dialogue}&rdquo;
+            </blockquote>
+            <div className="flex justify-center gap-10 mb-6 pt-4 border-t border-zinc-800">
+              <div>
+                <p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p>
+                <p className="text-zinc-400 text-xs mt-1">Lives</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-amber-400">${run.runMoney}</p>
+                <p className="text-zinc-400 text-xs mt-1">Run $</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-zinc-200">{totalEncountersThisFloor}</p>
+                <p className="text-zinc-400 text-xs mt-1">Questions</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setBossIntroAcked(true)}
+              className="w-full px-6 py-4 rounded-xl bg-red-700 hover:bg-red-600 font-bold text-lg text-white transition"
+            >
+              ⚔ Begin Battle
+            </button>
+          </div>
+          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>
+            Exit to home
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
   return (
-    <main className="min-h-screen p-4 md:p-8 text-zinc-100">
+    <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-2xl mx-auto flex flex-col gap-6">
         <RunHUD
           lives={run.livesRemaining}
@@ -430,9 +820,10 @@ export default function RunEncounterPage() {
           hasFiftyFifty={run.hasFiftyFifty}
           hasHint={run.hasHint}
           freeMulligan={run.freeMulligan}
+          relics={run.relics}
         />
 
-        <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6">
+        <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-zinc-100">
           <p className="text-amber-400/90 text-sm font-medium mb-2">Trivia monster — {monsterTitle}</p>
           <h2 className="text-xl font-semibold mb-6">{question.text}</h2>
 
@@ -457,7 +848,7 @@ export default function RunEncounterPage() {
                   className={`w-full text-left px-4 py-3 rounded-lg border transition ${
                     eliminated
                       ? "bg-zinc-900/30 border-zinc-700/30 text-zinc-600 line-through cursor-not-allowed"
-                      : "bg-zinc-800 border-zinc-600 hover:border-amber-500/50 hover:bg-zinc-700/80 disabled:opacity-50"
+                      : "bg-zinc-800 border-zinc-600 text-zinc-100 hover:border-amber-500/50 hover:bg-zinc-700/80 disabled:opacity-50"
                   }`}
                 >
                   {opt}
@@ -467,20 +858,20 @@ export default function RunEncounterPage() {
           </div>
 
           <div className="mt-6 pt-4 border-t border-zinc-700 flex justify-between items-center">
-            <span className="text-zinc-500 text-sm">
+            <span className="text-zinc-300 text-sm">
               {hasMulligan ? `Free skip (${run.freeMulligan} left)` : "Skip (no life lost)"}
             </span>
             <button
               onClick={payToSkip}
               disabled={!canSkip || busy}
-              className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+              className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm text-zinc-100"
             >
               {hasMulligan ? "Skip free" : `Pay $${run.skipCostRun} to skip`}
             </button>
           </div>
         </div>
 
-        <Link href="/" className="text-zinc-500 text-sm hover:underline">Exit to home</Link>
+        <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Exit to home</Link>
       </div>
     </main>
   );
@@ -498,7 +889,7 @@ function ShopGrid({
 }) {
   return (
     <div className="rounded-xl border border-zinc-700 bg-zinc-900/50 p-4">
-      <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest mb-3">Shop</h3>
+      <h3 className="text-sm font-semibold text-zinc-200 uppercase tracking-widest mb-3">Shop</h3>
       {peekResult && (
         <p className="text-amber-300 text-sm font-medium mb-3">
           Next node: <span className="font-bold">{peekResult}</span>
@@ -519,7 +910,7 @@ function ShopGrid({
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <p className="font-medium text-sm">{item.name}</p>
-                  <p className="text-zinc-500 text-xs mt-0.5">{item.desc}</p>
+                  <p className="text-zinc-300 text-xs mt-0.5">{item.desc}</p>
                 </div>
                 <span className="shrink-0 text-amber-400 font-bold text-sm">${item.price}</span>
               </div>

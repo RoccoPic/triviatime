@@ -6,7 +6,7 @@ import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import { RunHUD } from "@/components/RunHUD";
 import { RunMap } from "@/components/RunMap";
-import type { RunState } from "@/lib/run";
+import type { RunState, EventDef } from "@/lib/run";
 import type { RunMapData } from "@/lib/map";
 
 // ── Local types ───────────────────────────────────────────────────────────────
@@ -27,6 +27,7 @@ type Screen =
   | { id: "floor_clear"; run: RunState; mapData: RunMapData; floorCategory: { name: string } }
   | { id: "free_shop"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
   | { id: "rest"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
+  | { id: "event"; run: RunState; event: EventDef }
   | { id: "game_over" };
 
 type ShopItemDef = {
@@ -74,6 +75,9 @@ export default function RunEncounterPage() {
   // submitAnswer / payToSkip even though those API calls don't return mapData.
   const mapDataRef = useRef<RunMapData | null>(null);
 
+  // Banner shown on the map screen after returning from an event room.
+  const [mapNotification, setMapNotification] = useState<string | null>(null);
+
   // ── Initial load ────────────────────────────────────────────────────────────
   const fetchState = useCallback(async () => {
     if (!runId) return;
@@ -87,6 +91,10 @@ export default function RunEncounterPage() {
     if (data.state === "map") {
       mapDataRef.current = data.mapData;
       setScreen({ id: "map", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
+      return;
+    }
+    if (data.state === "event") {
+      setScreen({ id: "event", run: data.run, event: data.event });
       return;
     }
     if (data.run && data.question) {
@@ -104,6 +112,7 @@ export default function RunEncounterPage() {
     if (busy || screen.id !== "map") return;
     setBusy(true);
     setLastResult(null);
+    setMapNotification(null);
     try {
       const res = await fetch("/api/run/enter-node", {
         method: "POST",
@@ -122,6 +131,8 @@ export default function RunEncounterPage() {
       } else if (data.state === "rest") {
         mapDataRef.current = data.mapData;
         setScreen({ id: "rest", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
+      } else if (data.state === "event") {
+        setScreen({ id: "event", run: data.run, event: data.event });
       }
     } finally {
       setBusy(false);
@@ -150,6 +161,29 @@ export default function RunEncounterPage() {
       if (result.next === "map") {
         mapDataRef.current = result.mapData;
         setScreen({ id: "map", run: result.run, mapData: result.mapData, availableNodeIds: result.availableNodeIds });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Resolve event room choice ────────────────────────────────────────────────
+  async function resolveEvent(eventId: string, choiceId: string) {
+    if (screen.id !== "event" || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/run/event-choice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId, eventId, choiceId }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.next === "game_over") { setScreen({ id: "game_over" }); return; }
+      if (data.next === "run_complete") { router.push(`/run/${runId}/game-over`); return; }
+      if (data.next === "map") {
+        mapDataRef.current = data.mapData;
+        setMapNotification(data.message ?? null);
+        setScreen({ id: "map", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
       }
     } finally {
       setBusy(false);
@@ -301,6 +335,13 @@ export default function RunEncounterPage() {
             </div>
           )}
 
+          {/* Event outcome notification */}
+          {!isRest && mapNotification && (
+            <div className="rounded-lg border border-purple-500/40 bg-purple-900/20 px-4 py-3 text-purple-300 text-sm font-medium">
+              {mapNotification}
+            </div>
+          )}
+
           <div>
             <h2 className="text-lg font-semibold mb-3 text-zinc-300">
               {availableNodeIds.length === 0
@@ -323,6 +364,84 @@ export default function RunEncounterPage() {
               View results →
             </button>
           )}
+        </div>
+      </main>
+    );
+  }
+
+  // ── Event room ───────────────────────────────────────────────────────────────
+  if (screen.id === "event") {
+    const { run, event } = screen;
+    return (
+      <main className="min-h-screen p-4 md:p-8 text-zinc-100">
+        <div className="max-w-2xl mx-auto flex flex-col gap-4">
+
+          {/* Header card */}
+          <div className="rounded-xl border border-purple-600/40 bg-zinc-900/60 p-6">
+            <p className="text-purple-400 text-xs font-semibold uppercase tracking-widest mb-1">
+              ? Event Room
+            </p>
+            <h2 className="text-2xl font-bold mb-4">{event.title}</h2>
+            <p className="text-zinc-400 text-sm leading-relaxed italic">{event.description}</p>
+            <div className="flex gap-8 mt-4 pt-4 border-t border-zinc-800">
+              <div className="text-center">
+                <p className="text-lg font-bold text-red-400">{run.livesRemaining}</p>
+                <p className="text-zinc-500 text-xs">Lives</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold text-amber-400">${run.runMoney}</p>
+                <p className="text-zinc-500 text-xs">Run $</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Choice buttons */}
+          <div className="flex flex-col gap-3">
+            {event.choices.map((choice) => {
+              const canAfford = (choice.cost ?? 0) === 0 || run.runMoney >= (choice.cost ?? 0);
+              const hasLives  = choice.requireMinLives == null || run.livesRemaining >= choice.requireMinLives;
+              const isDisabled = !canAfford || !hasLives || busy;
+
+              return (
+                <button
+                  key={choice.id}
+                  onClick={() => resolveEvent(event.id, choice.id)}
+                  disabled={isDisabled}
+                  className="text-left p-4 rounded-xl border border-zinc-700 bg-zinc-800/50 hover:border-purple-500/40 hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm">{choice.label}</p>
+                      <p className="text-zinc-400 text-xs mt-0.5">{choice.description}</p>
+                      {!canAfford && (
+                        <p className="text-red-400/70 text-xs mt-1">
+                          Requires ${choice.cost}
+                        </p>
+                      )}
+                      {!hasLives && (
+                        <p className="text-red-400/70 text-xs mt-1">
+                          Requires {choice.requireMinLives} lives
+                        </p>
+                      )}
+                    </div>
+                    {(choice.cost ?? 0) > 0 && (
+                      <span className={`shrink-0 font-bold text-sm ${canAfford ? "text-amber-400" : "text-zinc-600"}`}>
+                        ${choice.cost}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {busy && (
+            <p className="text-center text-zinc-500 text-sm animate-pulse">Resolving…</p>
+          )}
+
+          <Link href="/" className="text-zinc-500 text-sm hover:underline text-center">
+            Exit to home
+          </Link>
         </div>
       </main>
     );

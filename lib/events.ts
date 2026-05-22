@@ -28,17 +28,17 @@ export interface EventOutcome {
   mulliganAdd: number;
   grantHint: boolean;
   grantFiftyFifty: boolean;
-  message: string; // thematic result message shown to player on return to map
+  message: string;
 }
 
 export interface EventChoice {
   id: string;
   label: string;
-  description: string;       // shown under the button label
-  cost?: number;             // money cost; disables if run.runMoney < cost
-  requireMinLives?: number;  // disables if run.livesRemaining < this
+  description: string;        // shown under the button label
+  cost?: number;              // money cost; choice disabled if run.runMoney < cost
+  requireMinLives?: number;   // choice disabled if run.livesRemaining < this
   effect: EventEffectDef;
-  outcomeMessage?: string;   // thematic result message (used for non-gamble effects)
+  outcomeMessage?: string;    // thematic result text (used for non-gamble effects)
 }
 
 export interface EventDef {
@@ -48,336 +48,489 @@ export interface EventDef {
   choices: EventChoice[];
 }
 
-// ─── Event definitions ────────────────────────────────────────────────────────
+// ─── Category-slug → theme-group mapping ─────────────────────────────────────
 
-export const EVENTS: EventDef[] = [
-  {
-    id: "wandering_scholar",
-    title: "The Wandering Scholar",
+const SLUG_TO_THEME: Record<string, string> = {
+  // Art
+  art: "art", impressionism: "art", "famous-art": "art", photography: "art",
+  "graphic-design": "art", architecture: "art", "art-movements": "art", cinematography: "art",
+  // Science
+  science: "science", biology: "science", "earth-science": "science", genetics: "science",
+  "human-anatomy": "science", chemistry: "science", meteorology: "science",
+  botany: "science", forensics: "science",
+  // History
+  history: "history", "world-war-1": "history", "world-war-2": "history",
+  "ancient-rome": "history", "industrial-revolution": "history",
+  "cold-war": "history", "ancient-egypt": "history",
+  // Geography
+  geography: "geography", "world-capitals": "geography", "national-parks": "geography",
+  "oceans-seas": "geography", islands: "geography", "us-states": "geography",
+  countries: "geography",
+  // Math
+  math: "math", algebra: "math", geometry: "math", trigonometry: "math",
+  calculus: "math", statistics: "math", "math-puzzles": "math",
+  // Standalone
+  sports: "sports",
+  technology: "technology",
+  "video-games": "video-games",
+  astronomy: "astronomy",
+  food: "food",
+};
+
+// ─── Event definitions (one per theme group) ──────────────────────────────────
+
+const EVENTS_BY_THEME: Record<string, EventDef> = {
+
+  // ── Art ── Mireille Vos ────────────────────────────────────────────────────
+  art: {
+    id: "mireille_vos",
+    title: "Mireille Vos",
     description:
-      "Between chambers you encounter a robed figure staggering under an impossible stack of books. " +
-      "They peer at you over their spectacles. \"Ah, a fellow knowledge-seeker! I've assisted many in " +
-      "their hour of need. My expertise is available — for a small consulting fee.\"",
+      "A painter in a paint-splattered coat glances up from a canvas she has inexplicably " +
+      "propped against the dungeon wall. She studies you with one eye closed. " +
+      "\"I am Mireille Vos. Every journey has a composition — " +
+      "and I can help you with yours. For a modest fee, of course.\"",
     choices: [
       {
-        id: "hire",
-        label: "Hire the scholar",
+        id: "portrait",
+        label: "Commission a portrait",
         description: "Absorb your next wrong answer",
-        cost: 40,
+        cost: 35,
         effect: { type: "shield" },
         outcomeMessage:
-          "The scholar nods briskly. \"Leave the difficult ones to me.\" They fall in step beside you.",
+          "Vos nods briskly, mixing colours. \"Every mistake is a stroke. I'll cover this one for you.\"",
       },
       {
-        id: "hint",
-        label: "Buy a hint",
+        id: "study",
+        label: "Buy a quick study",
         description: "One wrong option eliminated on your next question",
-        cost: 20,
+        cost: 15,
         effect: { type: "hint" },
         outcomeMessage:
-          "The scholar leans in and whispers a clue, then disappears back into the stacks.",
+          "She sketches something in charcoal and hands it to you. \"The eye sees what the mind ignores.\"",
+      },
+      {
+        id: "admire",
+        label: "Admire the work and move on",
+        description: "Nothing happens",
+        effect: { type: "none" },
+        outcomeMessage: "\"You have good taste,\" Vos calls after you. \"That, at least, is free.\"",
+      },
+    ],
+  },
+
+  // ── Science ── Professor Aldric Crane ─────────────────────────────────────
+  science: {
+    id: "professor_crane",
+    title: "Professor Aldric Crane",
+    description:
+      "A wild-haired professor in a singed lab coat strides from a side passage, nearly colliding " +
+      "with you. \"Professor Aldric Crane — extraordinary timing! I need a— that is to say, " +
+      "I could use a brief consultation. Are you open to a small experiment?\"",
+    choices: [
+      {
+        id: "formula",
+        label: "Try the formula",
+        description: "Freeze difficulty for 3 wrong answers (results may vary)",
+        effect: { type: "freeze", count: 3 },
+        outcomeMessage:
+          "Crane scribbles your reaction on a notepad. \"Fascinating. The neural-buffering compound appears functional.\"",
+      },
+      {
+        id: "antidote",
+        label: "Buy the antidote ($20)",
+        description: "Absorb your next wrong answer",
+        cost: 20,
+        effect: { type: "shield" },
+        outcomeMessage:
+          "\"The antidote counteracts one critical failure,\" Crane confirms, handing over a small vial.",
       },
       {
         id: "decline",
-        label: "Politely decline",
-        description: "Continue on your own",
-        effect: { type: "none" },
-        outcomeMessage:
-          "The scholar shrugs. \"Your loss, your loss,\" they mutter, staggering away under their books.",
-      },
-    ],
-  },
-
-  {
-    id: "cursed_tome",
-    title: "The Cursed Tome",
-    description:
-      "A leather-bound book floats on a dusty pedestal, radiating faint violet light. Its spine reads " +
-      "*Veritatis Infinitum*. The knowledge inside could sharpen your mind — or scramble it entirely.",
-    choices: [
-      {
-        id: "study",
-        label: "Study it carefully",
-        description: "Reset your difficulty to Easy",
-        effect: { type: "difficulty_set", value: 30 },
-        outcomeMessage:
-          "The text rearranges itself into something comprehensible. Your mind feels sharper, clearer.",
-      },
-      {
-        id: "skim",
-        label: "Skim the key pages",
-        description: "Two wrong options eliminated on your next question",
-        cost: 15,
-        effect: { type: "fifty_fifty" },
-        outcomeMessage:
-          "You absorb just enough to spot the red herrings ahead. The page crumbles to dust.",
-      },
-      {
-        id: "leave",
-        label: "Leave it alone",
+        label: "Decline the experiment",
         description: "Nothing happens",
         effect: { type: "none" },
         outcomeMessage:
-          "Probably wise. Cursed tomes rarely end well for the curious.",
+          "\"Completely understandable,\" says Crane, already writing up your refusal as a data point.",
       },
     ],
   },
 
-  {
-    id: "gambler",
-    title: "The Gambler",
+  // ── History ── Chancellor Varnoth ─────────────────────────────────────────
+  history: {
+    id: "chancellor_varnoth",
+    title: "Chancellor Varnoth",
     description:
-      "A wiry figure in a patched coat grins behind a rickety table, towers of coins gleaming beside them. " +
-      "\"Every scholar bets on what they know,\" they say with a lopsided grin. " +
-      "\"Why not put a little something on the line?\"",
+      "A spectral figure in ancient robes materializes in your path, parchment scroll in hand. " +
+      "\"I am Chancellor Varnoth,\" the apparition intones, " +
+      "\"administrator of realms since crumbled to dust. " +
+      "My decrees still carry weight — as does my knowledge. Bow, and perhaps I shall share it.\"",
     choices: [
       {
-        id: "big_wager",
-        label: "Big wager",
-        description: "50% chance to win $80 back",
-        cost: 30,
+        id: "counsel",
+        label: "Heed his counsel",
+        description: "Absorb your next wrong answer (he respects deference)",
+        effect: { type: "shield" },
+        outcomeMessage:
+          "The Chancellor nods slowly. \"History rewards those who listen.\" He gestures you through.",
+      },
+      {
+        id: "challenge",
+        label: "Challenge his authority",
+        description: "Wager $20 for $55 — 50% chance",
+        cost: 20,
         effect: {
           type: "gamble",
-          prizeOnWin: 80,
-          winMessage: "The coin lands in your favor — you pocket $80!",
-          loseMessage: "The coin turns against you. Your $30 wager disappears into the gambler's coat.",
+          prizeOnWin: 55,
+          winMessage:
+            "The ghost laughs. \"Impertinent! But correct.\" A coin-filled purse materialises in your hand.",
+          loseMessage:
+            "\"As I expected,\" Varnoth says coldly. The coins evaporate before you can close your fingers.",
         },
       },
       {
-        id: "small_bet",
-        label: "Small bet",
-        description: "50% chance to win $25 back",
-        cost: 10,
-        effect: {
-          type: "gamble",
-          prizeOnWin: 25,
-          winMessage: "Lucky! You win $25.",
-          loseMessage: "Unlucky. The gambler pockets your $10 with a shrug.",
-        },
-      },
-      {
-        id: "pass",
-        label: "Walk away",
+        id: "bow",
+        label: "Bow and continue",
         description: "Nothing happens",
         effect: { type: "none" },
-        outcomeMessage:
-          "\"Wise,\" says the gambler. \"Or cowardly. Hard to tell the difference.\"",
+        outcomeMessage: "Varnoth gestures you through with imperious grace. \"Wisely done.\"",
       },
     ],
   },
 
-  {
-    id: "amnesiac_librarian",
-    title: "The Amnesiac Librarian",
+  // ── Geography ── Captain Sable Finch ──────────────────────────────────────
+  geography: {
+    id: "captain_finch",
+    title: "Captain Sable Finch",
     description:
-      "A flustered librarian rushes past with an armful of wrongly-shelved books, muttering Dewey decimal " +
-      "numbers under their breath. They freeze when they see you. " +
-      "\"Oh! You look capable — would you spare a moment?\"",
+      "A weathered woman in a patched captain's coat is crouched over an enormous hand-drawn map " +
+      "she has spread across the floor, making notes in the margins. She looks up. " +
+      "\"Sable Finch, cartographer and navigator. These passages are more tangled than they look. " +
+      "I know them all — for the right consideration.\"",
     choices: [
       {
-        id: "sort",
-        label: "Sort the shelves",
-        description: "Gain a free skip",
-        effect: { type: "mulligan" },
+        id: "charts",
+        label: "Buy her charts ($20)",
+        description: "Difficulty −15 (she marks the easier paths)",
+        cost: 20,
+        effect: { type: "difficulty_delta", delta: -15 },
         outcomeMessage:
-          "\"Marvelous! Take this — a blank page for any question you'd rather not answer.\"",
+          "Finch rolls up a chart and hands it over. \"The scenic route. Fewer traps, better views.\"",
       },
       {
         id: "trade",
-        label: "Offer your expertise",
+        label: "Trade information ($10)",
         description: "Pay $10, earn $35",
         cost: 10,
         effect: { type: "money", delta: 35 },
         outcomeMessage:
-          "A fair deal. The librarian hands over a small purse with a grateful nod.",
+          "A quick exchange. \"Local knowledge for coin. Fair enough,\" Finch says, marking her ledger.",
       },
       {
-        id: "ignore",
-        label: "Sorry, you're on your own",
+        id: "walk",
+        label: "You know the way",
         description: "Nothing happens",
         effect: { type: "none" },
-        outcomeMessage:
-          "The librarian sighs and reshelves everything in the wrong place again.",
+        outcomeMessage: "\"Suit yourself,\" Finch mutters, returning to her charts.",
       },
     ],
   },
 
-  {
-    id: "philosophers_gambit",
-    title: "The Philosopher's Gambit",
+  // ── Math ── Theron Quill ───────────────────────────────────────────────────
+  math: {
+    id: "theron_quill",
+    title: "Theron Quill",
     description:
-      "You step into a lecture hall thick with chalk dust. A ghost-pale professor flickers at the board, " +
-      "which reads: *Adversity sharpens the mind*. Two scrolls rest on the desk. " +
-      "\"Choose your terms,\" the apparition intones.",
+      "A reed-thin man in ink-stained robes spins around from a wall he has covered in equations, " +
+      "startled to see you. \"Theron Quill — mathematician! I have been computing the optimal path " +
+      "through this dungeon for eleven days. The answer is irrational, but beautiful. " +
+      "May I offer a demonstration?\"",
     choices: [
       {
-        id: "harder",
-        label: "Accept the challenge",
-        description: "Difficulty +20, earn $45",
+        id: "formula",
+        label: "Ask for the formula",
+        description: "Two wrong options eliminated on your next question",
+        effect: { type: "fifty_fifty" },
+        outcomeMessage:
+          "Quill scribbles furiously. \"By process of elimination — two solutions are clearly false. Take note.\"",
+      },
+      {
+        id: "probability",
+        label: "Test his probability ($15)",
+        description: "Wager $15 for $40 — 50% chance",
+        cost: 15,
+        effect: {
+          type: "gamble",
+          prizeOnWin: 40,
+          winMessage:
+            "\"Yes! The expected value resolves favourably!\" Quill beams, handing over the winnings.",
+          loseMessage:
+            "Quill sighs. \"The median outcome. Statistically unsurprising. Better luck next sigma.\"",
+        },
+      },
+      {
+        id: "excuse",
+        label: "Politely extricate yourself",
+        description: "Nothing happens",
+        effect: { type: "none" },
+        outcomeMessage: "Quill barely notices your departure, already recalculating from first principles.",
+      },
+    ],
+  },
+
+  // ── Sports ── Rowan Ironstone ─────────────────────────────────────────────
+  sports: {
+    id: "rowan_ironstone",
+    title: "Rowan Ironstone",
+    description:
+      "A barrel-chested former champion plants himself in your way, a bag of trophies clanking at " +
+      "his side. He beams. \"Rowan Ironstone! Three-time regional champion, head coach, " +
+      "and living legend. You look like you could use some coaching — or at least a trophy " +
+      "for morale.\"",
+    choices: [
+      {
+        id: "train",
+        label: "Train with Rowan",
+        description: "Difficulty +15, earn $45 (hardship builds strength)",
         effect: {
           type: "multi",
           effects: [
-            { type: "difficulty_delta", delta: 20 },
+            { type: "difficulty_delta", delta: 15 },
             { type: "money", delta: 45 },
           ],
         },
         outcomeMessage:
-          "The ghost nods approvingly. \"Good. The sharpest mind welcomes friction.\"",
+          "Ironstone puts you through a brutal warm-up. \"Pain is just weakness leaving the mind. Or the dungeon. Either way.\"",
       },
       {
-        id: "easier",
-        label: "Request an easier track",
-        description: "Difficulty −15, pay $20",
-        cost: 20,
-        effect: { type: "difficulty_delta", delta: -15 },
+        id: "trophy",
+        label: "Buy a trophy ($25)",
+        description: "Absorb your next wrong answer",
+        cost: 25,
+        effect: { type: "shield" },
         outcomeMessage:
-          "\"Pragmatic,\" the ghost concedes, adjusting the difficulty curve on your behalf.",
+          "\"Good for morale,\" Ironstone declares, pressing a small trophy into your hands. \"Champions bounce back.\"",
       },
       {
-        id: "leave",
-        label: "Exit the lecture hall",
+        id: "sidestep",
+        label: "Politely step around him",
         description: "Nothing happens",
         effect: { type: "none" },
-        outcomeMessage:
-          "You leave the ghost to its chalk-dusted eternity.",
+        outcomeMessage: "\"Your loss!\" Ironstone calls after you. \"The training montage would have been incredible.\"",
       },
     ],
   },
 
-  {
-    id: "alchemists_bargain",
-    title: "The Alchemist's Bargain",
+  // ── Technology ── Zephyr Vance ────────────────────────────────────────────
+  technology: {
+    id: "zephyr_vance",
+    title: "Zephyr Vance",
     description:
-      "An alcove reeking of sulfur opens to your left. A hunched figure peers up from behind bubbling flasks, " +
-      "goggles glinting. \"Every transformation requires a sacrifice,\" they croak. " +
-      "\"What are you willing to trade?\"",
+      "A hooded figure crouches over a quietly humming device in the middle of the corridor, " +
+      "muttering serial numbers. They look up sharply. " +
+      "\"Zephyr Vance. Engineer. Optimiser. Your performance metrics suggest room for improvement. " +
+      "I have two solutions in stock.\"",
     choices: [
       {
-        id: "life_for_gold",
-        label: "Trade a life for $60",
-        description: "Lose 1 life, gain $60 (requires 3+ lives)",
-        requireMinLives: 3,
-        effect: {
-          type: "multi",
-          effects: [
-            { type: "lives", delta: -1 },
-            { type: "money", delta: 60 },
-          ],
-        },
+        id: "upgrade",
+        label: "Install the upgrade ($30)",
+        description: "Freeze difficulty for 3 wrong answers",
+        cost: 30,
+        effect: { type: "freeze", count: 3 },
         outcomeMessage:
-          "The alchemist extracts something ineffable from you. A flask fills with golden light. \"Fair trade,\" they say.",
+          "Vance installs something behind your ear with a small click. \"Stability patch deployed. You're welcome.\"",
       },
       {
-        id: "gold_for_life",
-        label: "Trade $50 for a life",
-        description: "Pay $50, gain 1 life",
-        cost: 50,
+        id: "diagnostic",
+        label: "Run diagnostics ($15)",
+        description: "Two wrong options eliminated on your next question",
+        cost: 15,
+        effect: { type: "fifty_fifty" },
+        outcomeMessage:
+          "\"System scan complete. Two variables eliminated from the decision space.\" Vance turns back to their device.",
+      },
+      {
+        id: "decline",
+        label: "Decline all devices",
+        description: "Nothing happens",
+        effect: { type: "none" },
+        outcomeMessage:
+          "\"Acceptable,\" Vance says, logging your refusal. \"Control group data is still useful.\"",
+      },
+    ],
+  },
+
+  // ── Video games ── Pixel ──────────────────────────────────────────────────
+  "video-games": {
+    id: "pixel",
+    title: "Pixel",
+    description:
+      "A blocky figure rendered in glitching pixels materialises from a crack in the wall, " +
+      "arms raised in greeting. " +
+      "\"HI I AM PIXEL,\" it announces in chunky retro text. " +
+      "\"I KNOW THE OLD CODES. THE CHEAT CODES. THEY STILL WORK DOWN HERE. INTERESTED?\"",
+    choices: [
+      {
+        id: "life_code",
+        label: "Enter the life code ($40)",
+        description: "Gain 1 life",
+        cost: 40,
         effect: { type: "lives", delta: 1 },
         outcomeMessage:
-          "The alchemist unstoppers a flask. A warm glow flows through you. You feel more resilient.",
+          "PIXEL flashes. \"EXTRA LIFE ADDED. RESPAWN POINT SET. GOOD LUCK PLAYER.\"",
       },
       {
-        id: "refuse",
-        label: "Back away slowly",
+        id: "skip_code",
+        label: "Enter the skip code ($15)",
+        description: "Gain a free skip",
+        cost: 15,
+        effect: { type: "mulligan" },
+        outcomeMessage:
+          "PIXEL nods. \"SKIP TOKEN LOADED. USE WISELY. OR NOT WISELY. PIXEL DOES NOT JUDGE.\"",
+      },
+      {
+        id: "close",
+        label: "Close the menu",
         description: "Nothing happens",
         effect: { type: "none" },
-        outcomeMessage:
-          "\"Wise,\" the alchemist says, turning back to their work. \"Most aren't.\"",
+        outcomeMessage: "PIXEL shrugs in nine pixels. \"OK. PIXEL WILL BE HERE IF YOU CHANGE MIND.\"",
       },
     ],
   },
 
-  {
-    id: "archivists_trial",
-    title: "The Archivist's Trial",
+  // ── Astronomy ── Lyra Coldstone ───────────────────────────────────────────
+  astronomy: {
+    id: "lyra_coldstone",
+    title: "Lyra Coldstone",
     description:
-      "A severe archivist in wire-rimmed glasses blocks your path, clipboard in hand. " +
-      "\"All who pass must declare their academic discipline,\" she announces flatly. " +
-      "No argument will move her. Three ancient scrolls rest in a rack beside her.",
+      "A cloaked figure stands motionless with her back to you, eye pressed to a floating telescope " +
+      "aimed at a crack of sky far overhead. She speaks without turning. " +
+      "\"Lyra Coldstone. The stars have been tracking your progress. " +
+      "A difficult alignment approaches. Let me adjust your trajectory.\"",
     choices: [
       {
-        id: "sciences",
-        label: "Natural Sciences",
+        id: "reading",
+        label: "Request a star reading",
+        description: "Difficulty −15 (the cosmos arrange in your favour)",
+        effect: { type: "difficulty_delta", delta: -15 },
+        outcomeMessage:
+          "\"A fortuitous conjunction,\" Coldstone murmurs. \"The questions ahead will bend toward you.\"",
+      },
+      {
+        id: "forecast",
+        label: "Commission a forecast ($15)",
+        description: "One wrong option eliminated on your next question",
+        cost: 15,
+        effect: { type: "hint" },
+        outcomeMessage:
+          "She traces a line across a star chart. \"One possibility is clearly false. The rest is up to you.\"",
+      },
+      {
+        id: "pass",
+        label: "The stars can wait",
+        description: "Nothing happens",
+        effect: { type: "none" },
+        outcomeMessage: "\"They always do,\" says Coldstone, not moving.",
+      },
+    ],
+  },
+
+  // ── Food ── Chef Barnabas Holt ────────────────────────────────────────────
+  food: {
+    id: "chef_barnabas",
+    title: "Chef Barnabas Holt",
+    description:
+      "A stout chef in a flour-dusted apron waves you over from behind a portable stove, " +
+      "already ladling. \"Chef Barnabas Holt! Sit down! You look underfed. " +
+      "A hungry mind is a wrong-answer mind — this I have proven extensively " +
+      "over a distinguished career.\"",
+    choices: [
+      {
+        id: "meal",
+        label: "Accept the hearty meal ($35)",
+        description: "Gain 1 life",
+        cost: 35,
+        effect: { type: "lives", delta: 1 },
+        outcomeMessage:
+          "Holt watches you eat with parental satisfaction. \"Colour returning to the cheeks. Excellent.\"",
+      },
+      {
+        id: "snack",
+        label: "Take a quick snack ($10)",
+        description: "Pay $10, earn $30",
+        cost: 10,
+        effect: { type: "money", delta: 30 },
+        outcomeMessage:
+          "He waves away your money and presses change into your hand. \"On the house — mostly. Tips are appreciated.\"",
+      },
+      {
+        id: "decline",
+        label: "I ate before the dungeon",
+        description: "Nothing happens",
+        effect: { type: "none" },
+        outcomeMessage:
+          "Holt looks personally affronted. \"Before the dungeon,\" he repeats. \"Before the dungeon.\"",
+      },
+    ],
+  },
+
+  // ── Mystery fallback ── The Chronicler ───────────────────────────────────
+  mystery: {
+    id: "the_chronicler",
+    title: "The Chronicler",
+    description:
+      "A hooded figure sits cross-legged in the corridor, surrounded by floating scrolls and " +
+      "ink-stained hands. They look up calmly. " +
+      "\"I am the Chronicler. I have recorded every run made through this dungeon — " +
+      "victories, failures, and everything between. Perhaps I can be of assistance.\"",
+    choices: [
+      {
+        id: "counsel",
+        label: "Request counsel",
         description: "Two wrong options eliminated on your next question",
         effect: { type: "fifty_fifty" },
         outcomeMessage:
-          "\"Empiricist.\" She makes a note. The scroll falls open to reveal which answers are false.",
+          "The Chronicler consults a scroll. \"Two paths lead nowhere. I have noted which ones.\"",
       },
       {
-        id: "arts",
-        label: "History & Arts",
-        description: "Absorb your next wrong answer",
-        effect: { type: "shield" },
+        id: "trade",
+        label: "Trade a secret ($20)",
+        description: "Pay $20, earn $50",
+        cost: 20,
+        effect: { type: "money", delta: 50 },
         outcomeMessage:
-          "\"Humanist.\" She makes a note. History teaches us, she observes, how to survive our mistakes.",
+          "A small pouch exchanges hands. \"Knowledge for knowledge. The oldest economy.\"",
       },
       {
-        id: "mathematics",
-        label: "Mathematics & Logic",
-        description: "Freeze difficulty for your next 2 wrong answers",
-        effect: { type: "freeze", count: 2 },
-        outcomeMessage:
-          "\"Logician.\" She makes a note. Logic, she remarks, resists the pressure to panic.",
-      },
-    ],
-  },
-
-  {
-    id: "temporal_anomaly",
-    title: "The Temporal Anomaly",
-    description:
-      "Time stutters. A pocket watch floats before you, its hands spinning in both directions at once. " +
-      "Touching it feels like cheating. But then again — you're in a trivia dungeon. " +
-      "The rules were already strange.",
-    choices: [
-      {
-        id: "wind_forward",
-        label: "Wind it forward",
-        description: "Gain a free skip + $10",
-        effect: {
-          type: "multi",
-          effects: [
-            { type: "mulligan" },
-            { type: "money", delta: 10 },
-          ],
-        },
-        outcomeMessage:
-          "Time skips ahead. Somewhere, a question evaporates before it can be asked.",
-      },
-      {
-        id: "wind_backward",
-        label: "Wind it backward",
-        description: "Reset difficulty to Medium",
-        effect: { type: "difficulty_set", value: 50 },
-        outcomeMessage:
-          "The watch ticks backward. Your recent string of hard questions unwinds slightly.",
-      },
-      {
-        id: "leave",
-        label: "Leave well enough alone",
+        id: "pass",
+        label: "Pass through in silence",
         description: "Nothing happens",
         effect: { type: "none" },
-        outcomeMessage:
-          "The watch floats on, ticking both ways. Someone else's problem.",
+        outcomeMessage: "The Chronicler makes a note. Every choice, even silence, is recorded.",
       },
     ],
   },
-];
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Deterministically pick an event for a given map node ID.
- *  Same nodeId always produces the same event — survives page refresh. */
-export function pickEventForNode(nodeId: string): EventDef {
-  let hash = 5381;
-  for (let i = 0; i < nodeId.length; i++) {
-    hash = ((hash << 5) + hash + nodeId.charCodeAt(i)) & 0x7fffffff;
-  }
-  return EVENTS[hash % EVENTS.length];
+function themeForSlug(categorySlug: string): string {
+  return SLUG_TO_THEME[categorySlug] ?? "mystery";
 }
 
+/**
+ * Pick the themed event for a map node.
+ * `themeSlug` is a category slug stored on the node at map-generation time.
+ * Falls back to the "mystery" event for unknown slugs or when themeSlug is absent.
+ */
+export function pickEventForNode(nodeId: string, themeSlug?: string): EventDef {
+  const theme = themeSlug ? themeForSlug(themeSlug) : "mystery";
+  return EVENTS_BY_THEME[theme] ?? EVENTS_BY_THEME.mystery;
+}
+
+/** Look up an event by its id across all themes. */
 export function getEventById(id: string): EventDef | undefined {
-  return EVENTS.find((e) => e.id === id);
+  return Object.values(EVENTS_BY_THEME).find((e) => e.id === id);
 }
 
 export function getChoiceById(event: EventDef, choiceId: string): EventChoice | undefined {
@@ -402,23 +555,20 @@ function resolveMechanical(
   };
 
   if (effect.type === "multi") {
-    return effect.effects.reduce(
-      (acc, e) => {
-        const sub = resolveMechanical(e);
-        return {
-          moneyDelta:     acc.moneyDelta + sub.moneyDelta,
-          livesDelta:     acc.livesDelta + sub.livesDelta,
-          difficultySet:  sub.difficultySet ?? acc.difficultySet,
-          difficultyDelta: acc.difficultyDelta + sub.difficultyDelta,
-          shieldAdd:      acc.shieldAdd + sub.shieldAdd,
-          freezeAdd:      acc.freezeAdd + sub.freezeAdd,
-          mulliganAdd:    acc.mulliganAdd + sub.mulliganAdd,
-          grantHint:      acc.grantHint || sub.grantHint,
-          grantFiftyFifty: acc.grantFiftyFifty || sub.grantFiftyFifty,
-        };
-      },
-      zero
-    );
+    return effect.effects.reduce((acc, e) => {
+      const sub = resolveMechanical(e);
+      return {
+        moneyDelta:      acc.moneyDelta + sub.moneyDelta,
+        livesDelta:      acc.livesDelta + sub.livesDelta,
+        difficultySet:   sub.difficultySet ?? acc.difficultySet,
+        difficultyDelta: acc.difficultyDelta + sub.difficultyDelta,
+        shieldAdd:       acc.shieldAdd + sub.shieldAdd,
+        freezeAdd:       acc.freezeAdd + sub.freezeAdd,
+        mulliganAdd:     acc.mulliganAdd + sub.mulliganAdd,
+        grantHint:       acc.grantHint || sub.grantHint,
+        grantFiftyFifty: acc.grantFiftyFifty || sub.grantFiftyFifty,
+      };
+    }, zero);
   }
 
   switch (effect.type) {
@@ -443,14 +593,14 @@ export function resolveEffect(effect: EventEffectDef, fallbackMessage: string): 
   if (effect.type === "gamble") {
     const won = Math.random() < 0.5;
     return {
-      moneyDelta:     won ? effect.prizeOnWin : 0,
-      livesDelta:     0,
-      difficultySet:  null,
+      moneyDelta:      won ? effect.prizeOnWin : 0,
+      livesDelta:      0,
+      difficultySet:   null,
       difficultyDelta: 0,
-      shieldAdd:      0,
-      freezeAdd:      0,
-      mulliganAdd:    0,
-      grantHint:      false,
+      shieldAdd:       0,
+      freezeAdd:       0,
+      mulliganAdd:     0,
+      grantHint:       false,
       grantFiftyFifty: false,
       message: won ? effect.winMessage : effect.loseMessage,
     };

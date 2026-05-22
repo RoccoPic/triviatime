@@ -1,15 +1,16 @@
 // ─── Map types & generation ──────────────────────────────────────────────────
 
-export type NodeType = "battle" | "elite" | "shop" | "rest";
+export type NodeType = "battle" | "elite" | "shop" | "rest" | "event";
 
 export interface MapNode {
-  id: string;        // "c{col}r{row}"
-  col: number;       // 0-indexed column
-  row: number;       // 0-indexed row within column
+  id: string;         // "c{col}r{row}"
+  col: number;        // 0-indexed column
+  row: number;        // 0-indexed row within column
   type: NodeType;
-  categoryId: string | null;   // null for shop / rest nodes
-  categoryName?: string;       // denormalized for display
-  nextIds: string[];           // IDs of nodes this connects to in col+1
+  categoryId: string | null;  // null for shop / rest / event nodes
+  categoryName?: string;      // denormalized for display
+  nextIds: string[];          // IDs of nodes this connects to in col+1
+  themeSlug?: string;         // event nodes only: category slug used to pick the themed event
 }
 
 export interface RunMapData {
@@ -26,16 +27,17 @@ function pickType(col: number): NodeType {
   // First and last columns are always battles
   if (col === 0 || col === COLUMN_SIZES.length - 1) return "battle";
   const r = Math.random();
-  if (r < 0.50) return "battle";
-  if (r < 0.70) return "elite";
-  if (r < 0.87) return "shop";
-  return "rest";
+  if (r < 0.42) return "battle";
+  if (r < 0.60) return "elite";
+  if (r < 0.74) return "shop";
+  if (r < 0.86) return "rest";
+  return "event";
 }
 
 /** Generate a full run map from a pool of categories.
  *  Each battle/elite node gets a unique shuffled category assigned to it. */
 export function generateMap(
-  categories: { id: string; name: string }[]
+  categories: { id: string; name: string; slug?: string }[]
 ): RunMapData {
   const shuffled = [...categories].sort(() => Math.random() - 0.5);
   let catIdx = 0;
@@ -47,6 +49,14 @@ export function generateMap(
       const type = pickType(col);
       const needsCat = type === "battle" || type === "elite";
       const cat = needsCat ? shuffled[catIdx++ % shuffled.length] : undefined;
+
+      // Event nodes get a random category slug to determine their thematic character.
+      // The slug is stored on the node so the same event appears on page refresh.
+      const themeSlug =
+        type === "event"
+          ? categories[Math.floor(Math.random() * categories.length)]?.slug
+          : undefined;
+
       nodes.push({
         id: `c${col}r${row}`,
         col,
@@ -55,6 +65,7 @@ export function generateMap(
         categoryId: cat?.id ?? null,
         categoryName: cat?.name,
         nextIds: [],
+        ...(themeSlug !== undefined ? { themeSlug } : {}),
       });
     }
   }

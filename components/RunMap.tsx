@@ -18,6 +18,7 @@ const NODE_ICON: Record<string, string> = {
   elite:  "♛",
   shop:   "✦",
   rest:   "❤",
+  event:  "?",
 };
 
 const NODE_STROKE: Record<string, string> = {
@@ -25,6 +26,7 @@ const NODE_STROKE: Record<string, string> = {
   elite:  "#d97706",
   shop:   "#22c55e",
   rest:   "#3b82f6",
+  event:  "#a855f7",
 };
 
 const NODE_FILL: Record<string, string> = {
@@ -32,6 +34,7 @@ const NODE_FILL: Record<string, string> = {
   elite:  "#1c1200",
   shop:   "#071a0a",
   rest:   "#070f1a",
+  event:  "#0e0718",
 };
 
 const NODE_LABEL: Record<string, string> = {
@@ -39,6 +42,7 @@ const NODE_LABEL: Record<string, string> = {
   elite:  "Elite",
   shop:   "Shop",
   rest:   "Rest",
+  event:  "Event",
 };
 
 // ── Position helper ───────────────────────────────────────────────────────────
@@ -173,6 +177,7 @@ export function RunMap({ mapData, availableNodeIds, onSelect, selecting }: RunMa
         <span><span className="text-amber-500">♛</span> Elite · harder + more $</span>
         <span><span className="text-green-500">✦</span> Shop · free items</span>
         <span><span className="text-blue-500">❤</span> Rest · +1 life</span>
+        <span><span className="text-purple-400">?</span> Event · unknown encounter</span>
       </div>
     </div>
   );

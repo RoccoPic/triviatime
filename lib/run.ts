@@ -5,6 +5,10 @@ import {
   type RunMapData, type MapNode,
 } from "@/lib/map";
 import {
+  pickEventForNode, getEventById, getChoiceById, resolveEffect,
+  type EventDef,
+} from "@/lib/events";
+import {
   LIVES_START,
   RUN_MONEY_START,
   MONEY_PER_CORRECT,
@@ -100,7 +104,7 @@ export type RunWithEncounter = {
   floorCategoryOrder: string[];
 };
 
-export type { RunMapData, MapNode };
+export type { RunMapData, MapNode, EventDef };
 
 export type RunMapState = {
   state: "map";
@@ -109,10 +113,18 @@ export type RunMapState = {
   availableNodeIds: string[];
 };
 
+export type RunEventState = {
+  state: "event";
+  run: RunState;
+  mapData: RunMapData;
+  event: EventDef;
+};
+
 export type EnterNodeResult =
   | { state: "encounter"; encounter: RunWithEncounter }
   | { state: "free_shop"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
-  | { state: "rest"; run: RunState; mapData: RunMapData; availableNodeIds: string[] };
+  | { state: "rest"; run: RunState; mapData: RunMapData; availableNodeIds: string[] }
+  | RunEventState;
 
 export type ShopItem =
   | "extra_life"
@@ -234,7 +246,7 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
 export async function getRunEncounter(
   runId: string,
   userId: string
-): Promise<RunWithEncounter | RunMapState | "game_over" | null> {
+): Promise<RunWithEncounter | RunMapState | RunEventState | "game_over" | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return "game_over";
 
@@ -249,7 +261,15 @@ export async function getRunEncounter(
     }
 
     const node = getNodeById(mapData, run.currentNodeId);
-    if (!node || !node.categoryId) return null;
+    if (!node) return null;
+
+    // Event node: player is mid-event (e.g. page refresh) — re-surface the same event.
+    if (node.type === "event") {
+      const event = pickEventForNode(node.id, node.themeSlug);
+      return { state: "event", run: toRunState(run), mapData, event };
+    }
+
+    if (!node.categoryId) return null;
 
     const floorNum = nodeToFloorNumber(node);
     const answersThisFloor = run.answers.filter((a) => a.floorIndex === floorNum);
@@ -669,6 +689,16 @@ export async function enterNode(
     };
   }
 
+  // Event node: set as active node, pick themed event, return event state
+  if (node.type === "event") {
+    const updated = await prisma.run.update({
+      where: { id: runId },
+      data: { currentNodeId: nodeId, currentFloor: floorNum },
+    });
+    const event = pickEventForNode(nodeId, node.themeSlug);
+    return { state: "event", run: toRunState(updated), mapData, event };
+  }
+
   // Battle / elite: set as active node, return first encounter
   await prisma.run.update({
     where: { id: runId },
@@ -734,6 +764,104 @@ export async function startNextFloor(runId: string, userId: string): Promise<Run
   const enc = await getRunEncounter(runId, userId);
   if (!enc || enc === "game_over" || !("question" in enc)) return null;
   return enc;
+}
+
+/** Resolve a player's choice in an event room. */
+export async function resolveEventChoice(
+  runId: string,
+  userId: string,
+  eventId: string,
+  choiceId: string
+): Promise<{ message: string; mapState: RunMapState | "run_complete" } | "game_over" | null> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
+  if (!run || run.endedAt) return "game_over";
+  if (!run.mapData || !run.currentNodeId) return null;
+
+  const mapData = run.mapData as unknown as RunMapData;
+  const node = getNodeById(mapData, run.currentNodeId);
+  if (!node || node.type !== "event") return null;
+
+  // Validate that the submitted eventId matches the node's actual event (anti-cheat)
+  const expectedEvent = pickEventForNode(node.id, node.themeSlug);
+  if (expectedEvent.id !== eventId) return null;
+
+  const event = getEventById(eventId);
+  if (!event) return null;
+
+  const choice = getChoiceById(event, choiceId);
+  if (!choice) return null;
+
+  // Validate requirements
+  const cost = choice.cost ?? 0;
+  if (run.runMoney < cost) return null;
+  if (choice.requireMinLives !== undefined && run.livesRemaining < choice.requireMinLives) return null;
+
+  // Resolve the effect
+  const fallback = choice.outcomeMessage ?? "You continue on your way.";
+  const outcome = resolveEffect(choice.effect, fallback);
+
+  // Compute new stats
+  const newMoney = Math.max(0, run.runMoney - cost + outcome.moneyDelta);
+  const newLives = Math.min(6, Math.max(0, run.livesRemaining + outcome.livesDelta));
+
+  if (newLives <= 0) {
+    await endRun(runId, userId);
+    return "game_over";
+  }
+
+  const newDifficulty =
+    outcome.difficultySet !== null
+      ? outcome.difficultySet
+      : Math.min(100, Math.max(1, run.playerDifficulty + outcome.difficultyDelta));
+
+  // Mark node complete
+  const newMapData: RunMapData = {
+    ...mapData,
+    completedNodeIds: [...mapData.completedNodeIds, run.currentNodeId],
+  };
+
+  if (isMapComplete(newMapData)) {
+    // Persist stat changes before completing (completeRun just sets endedAt + awards money)
+    await prisma.run.update({
+      where: { id: runId },
+      data: {
+        runMoney: newMoney,
+        livesRemaining: newLives,
+        playerDifficulty: newDifficulty,
+        shieldCount:      (run.shieldCount ?? 0) + outcome.shieldAdd,
+        freezeCount:      (run.freezeCount ?? 0) + outcome.freezeAdd,
+        freeMulligan:     (run.freeMulligan ?? 0) + outcome.mulliganAdd,
+        hasFiftyFifty:    run.hasFiftyFifty || outcome.grantFiftyFifty,
+        hasHint:          run.hasHint || outcome.grantHint,
+        mapData:          newMapData as object,
+        currentNodeId:    null,
+      },
+    });
+    await completeRun(runId, userId);
+    return { message: outcome.message, mapState: "run_complete" };
+  }
+
+  const updated = await prisma.run.update({
+    where: { id: runId },
+    data: {
+      runMoney: newMoney,
+      livesRemaining: newLives,
+      playerDifficulty: newDifficulty,
+      shieldCount:      (run.shieldCount ?? 0) + outcome.shieldAdd,
+      freezeCount:      (run.freezeCount ?? 0) + outcome.freezeAdd,
+      freeMulligan:     (run.freeMulligan ?? 0) + outcome.mulliganAdd,
+      hasFiftyFifty:    run.hasFiftyFifty || outcome.grantFiftyFifty,
+      hasHint:          run.hasHint || outcome.grantHint,
+      mapData:          newMapData as object,
+      currentNodeId:    null,
+    },
+  });
+
+  const available = getAvailableNodeIds(newMapData);
+  return {
+    message: outcome.message,
+    mapState: { state: "map", run: toRunState(updated), mapData: newMapData, availableNodeIds: available },
+  };
 }
 
 export async function completeRun(runId: string, userId: string): Promise<void> {

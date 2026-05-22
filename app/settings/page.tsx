@@ -46,13 +46,13 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="min-h-screen p-4 md:p-8 text-zinc-100">
+    <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-2xl mx-auto">
         <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
         <section className="mb-8 p-4 rounded-lg bg-zinc-900/80 border border-zinc-700">
           <h2 className="text-lg font-semibold mb-3">Background color</h2>
-          <p className="text-zinc-400 text-sm mb-4">Choose a background color for the app.</p>
+          <p className="text-zinc-200 text-sm mb-4">Choose a background color for the app.</p>
           <div className="flex flex-wrap gap-2">
             {BACKGROUND_THEMES.map(({ id, label, color }) => {
               const selected = backgroundTheme === id;
@@ -80,7 +80,7 @@ export default function SettingsPage() {
 
         <section className="mb-8 p-4 rounded-lg bg-zinc-900/80 border border-zinc-700">
           <h2 className="text-lg font-semibold mb-3">Topics</h2>
-          <p className="text-zinc-400 text-sm mb-4">
+          <p className="text-zinc-200 text-sm mb-4">
             Enable or disable topics for runs. Only enabled topics can appear as floors. If none are enabled, all topics are used.
           </p>
           <div className="flex flex-wrap gap-2 mb-3">
@@ -110,7 +110,7 @@ export default function SettingsPage() {
                   className={`px-4 py-2 rounded-lg font-medium transition border ${
                     enabled
                       ? "bg-amber-600 border-amber-500 text-white"
-                      : "bg-zinc-800/50 border-zinc-600 text-zinc-400 hover:border-zinc-500"
+                      : "bg-zinc-800/50 border-zinc-600 text-zinc-200 hover:border-zinc-500"
                   }`}
                 >
                   {cat.name}
@@ -119,11 +119,11 @@ export default function SettingsPage() {
             })}
           </div>
           {categories.length === 0 && (
-            <p className="text-zinc-500 text-sm">Loading topics…</p>
+            <p className="text-zinc-300 text-sm">Loading topics…</p>
           )}
         </section>
 
-        <Link href="/" className="text-zinc-500 hover:underline">
+        <Link href="/" className="hover:underline" style={{ color: "var(--text-muted)" }}>
           ← Back to home
         </Link>
       </div>

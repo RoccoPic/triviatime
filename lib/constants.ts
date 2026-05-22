@@ -1,8 +1,19 @@
 export const LIVES_START = 3;
+export const BOSS_EXTRA_QUESTIONS = 2; // Boss floors have this many more questions than normal
 export const RUN_MONEY_START = 0;
 export const MONEY_PER_CORRECT = 15;
 export const SKIP_COST = 28;
 export const QUESTIONS_PER_FLOOR = 4;
+
+/** How many questions appear per battle node on a given wave (grows by 1 per wave, max 8). */
+export function questionsPerFloor(wave: number): number {
+  return Math.min(QUESTIONS_PER_FLOOR + (wave - 1), 8);
+}
+
+/** Starting player-difficulty for a new wave (harder each time). */
+export function waveStartDifficulty(wave: number): number {
+  return Math.min(50 + (wave - 1) * 8, 90);
+}
 export const STREAK_FOR_LIFE = 3;
 export const COLLECTION_CONVERSION_RATE = 0.5;
 

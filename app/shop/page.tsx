@@ -85,14 +85,14 @@ export default function ShopPage() {
   }
 
   if (status === "loading" || isLoading) {
-    return <main className="min-h-screen flex items-center justify-center text-zinc-400">Loading shop…</main>;
+    return <main className="min-h-screen flex items-center justify-center">Loading shop…</main>;
   }
 
   if (error && !shop) {
     return (
-      <main className="min-h-screen flex flex-col items-center justify-center p-8 text-zinc-100 gap-4">
+      <main className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
         <p className="text-red-400">{error}</p>
-        <Link href="/" className="text-zinc-500 hover:underline text-sm">← Home</Link>
+        <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>← Home</Link>
       </main>
     );
   }
@@ -100,17 +100,17 @@ export default function ShopPage() {
   if (!shop) return null;
 
   return (
-    <main className="min-h-screen p-4 md:p-8 text-zinc-100">
+    <main className="min-h-screen p-4 md:p-8">
       <div className="max-w-2xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold">Shop</h1>
           <div className="text-right">
             <p className="text-amber-400 font-bold text-xl">{shop.collectionMoney}</p>
-            <p className="text-zinc-500 text-xs">collection $</p>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>collection $</p>
           </div>
         </div>
 
-        <p className="text-zinc-400 text-sm mb-6">
+        <p className="text-sm mb-6" style={{ color: "var(--text-muted)" }}>
           Permanent upgrades that apply to every future run. Each can only be purchased once.
         </p>
 
@@ -139,7 +139,7 @@ export default function ShopPage() {
                       </span>
                     )}
                   </div>
-                  <p className="text-zinc-400 text-sm mt-0.5">{upg.desc}</p>
+                  <p className="text-zinc-200 text-sm mt-0.5">{upg.desc}</p>
                 </div>
                 <div className="shrink-0 text-right">
                   {owned ? (
@@ -160,8 +160,8 @@ export default function ShopPage() {
         </div>
 
         <div className="mt-8 flex gap-4">
-          <Link href="/" className="text-zinc-500 hover:underline text-sm">← Home</Link>
-          <Link href="/progress" className="text-zinc-500 hover:underline text-sm">My progress</Link>
+          <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>← Home</Link>
+          <Link href="/progress" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>My progress</Link>
         </div>
       </div>
     </main>

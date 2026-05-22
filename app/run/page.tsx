@@ -46,16 +46,16 @@ export default function RunPage() {
 
   if (status === "loading" || status === "unauthenticated") {
     return (
-      <main className="min-h-screen flex items-center justify-center text-zinc-400">
+      <main className="min-h-screen flex items-center justify-center">
         Loading...
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center p-8 text-zinc-100">
+    <main className="min-h-screen flex flex-col items-center justify-center p-8">
       <h1 className="text-2xl font-bold mb-4">Start a run</h1>
-      <p className="text-zinc-400 mb-6 text-center max-w-md">
+      <p className="mb-6 text-center max-w-md" style={{ color: "var(--text-muted)" }}>
         You start with 3 lives and 0 run money. Answer correctly to earn money; wrong answers cost a life. Pay run money to skip a question or spend it in the shop between floors.
       </p>
       {error && <p className="text-red-400 mb-4">{error}</p>}
@@ -66,7 +66,7 @@ export default function RunPage() {
       >
         {starting ? "Starting..." : "Start run"}
       </button>
-      <Link href="/" className="mt-6 text-zinc-500 hover:underline">Back to home</Link>
+      <Link href="/" className="mt-6 hover:underline" style={{ color: "var(--text-muted)" }}>Back to home</Link>
     </main>
   );
 }

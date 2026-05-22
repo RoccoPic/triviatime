@@ -35,8 +35,8 @@ export async function POST(req: Request) {
   if (result === null) {
     return NextResponse.json({ error: "Invalid event or choice" }, { status: 400 });
   }
-  if (result.mapState === "run_complete") {
-    return NextResponse.json({ next: "run_complete", message: result.message });
+  if (result.mapState.state === "wave_complete") {
+    return NextResponse.json({ next: "wave_complete", run: result.mapState.run, message: result.message });
   }
   return NextResponse.json({ next: "map", message: result.message, ...result.mapState });
 }

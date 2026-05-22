@@ -2,20 +2,19 @@
 
 import type { MapNode, RunMapData } from "@/lib/map";
 
-// ── Layout constants ──────────────────────────────────────────────────────────
+// ── Layout constants (wave-1 defaults; overridden dynamically per render) ─────
 const CANVAS_W = 700;
-const CANVAS_H = 280;
 const PADDING_X = 44;
-const NODE_R = 26;
-const NUM_COLS = 6;
-const COL_STEP = (CANVAS_W - 2 * PADDING_X) / (NUM_COLS - 1); // ~122
-const CENTER_Y = CANVAS_H / 2;
-const ROW_SPACING = 86;
+const ROW_SPACING = 80;
+
+// How long (ms) the token glide animation takes — keep in sync with page.tsx
+export const TOKEN_MOVE_MS = 700;
 
 // ── Node appearance ───────────────────────────────────────────────────────────
 const NODE_ICON: Record<string, string> = {
   battle: "⚔",
   elite:  "♛",
+  boss:   "☠",
   shop:   "✦",
   rest:   "❤",
   event:  "?",
@@ -24,6 +23,7 @@ const NODE_ICON: Record<string, string> = {
 const NODE_STROKE: Record<string, string> = {
   battle: "#71717a",
   elite:  "#d97706",
+  boss:   "#ef4444",
   shop:   "#22c55e",
   rest:   "#3b82f6",
   event:  "#a855f7",
@@ -32,6 +32,7 @@ const NODE_STROKE: Record<string, string> = {
 const NODE_FILL: Record<string, string> = {
   battle: "#18181b",
   elite:  "#1c1200",
+  boss:   "#1c0000",
   shop:   "#071a0a",
   rest:   "#070f1a",
   event:  "#0e0718",
@@ -40,16 +41,22 @@ const NODE_FILL: Record<string, string> = {
 const NODE_LABEL: Record<string, string> = {
   battle: "Battle",
   elite:  "Elite",
+  boss:   "Boss",
   shop:   "Shop",
   rest:   "Rest",
   event:  "Event",
 };
 
-// ── Position helper ───────────────────────────────────────────────────────────
-function nodePos(node: MapNode, allNodes: MapNode[]): { x: number; y: number } {
+// ── Position helper (takes dynamic layout values) ─────────────────────────────
+function nodePos(
+  node: MapNode,
+  allNodes: MapNode[],
+  colStep: number,
+  centerY: number,
+): { x: number; y: number } {
   const inCol = allNodes.filter((n) => n.col === node.col).length;
-  const x = PADDING_X + node.col * COL_STEP;
-  const y = CENTER_Y + (node.row - (inCol - 1) / 2) * ROW_SPACING;
+  const x = PADDING_X + node.col * colStep;
+  const y = centerY + (node.row - (inCol - 1) / 2) * ROW_SPACING;
   return { x, y };
 }
 
@@ -58,12 +65,33 @@ interface RunMapProps {
   mapData: RunMapData;
   availableNodeIds: string[];
   onSelect: (nodeId: string) => void;
-  selecting?: boolean; // disable all clicks while a request is in flight
+  selecting?: boolean;      // disable clicks while a request is in flight
+  enteringNodeId?: string;  // node the player just clicked — token animates here
 }
 
-export function RunMap({ mapData, availableNodeIds, onSelect, selecting }: RunMapProps) {
+export function RunMap({
+  mapData,
+  availableNodeIds,
+  onSelect,
+  selecting,
+  enteringNodeId,
+}: RunMapProps) {
   const { nodes, completedNodeIds } = mapData;
-  const posMap = Object.fromEntries(nodes.map((n) => [n.id, nodePos(n, nodes)]));
+
+  // ── Dynamic layout (scales for higher-wave maps) ──────────────────────────
+  const numCols = nodes.length > 0 ? Math.max(...nodes.map((n) => n.col)) + 1 : 6;
+  const maxRow  = nodes.length > 0 ? Math.max(...nodes.map((n) => n.row))      : 2;
+  const NODE_R  = numCols <= 6 ? 26 : numCols <= 8 ? 22 : 19;
+  const CANVAS_H = Math.max(280, (maxRow + 1) * ROW_SPACING + 100);
+  const COL_STEP = (CANVAS_W - 2 * PADDING_X) / Math.max(numCols - 1, 1);
+  const CENTER_Y = CANVAS_H / 2;
+
+  const posMap = Object.fromEntries(nodes.map((n) => [n.id, nodePos(n, nodes, COL_STEP, CENTER_Y)]));
+
+  // Token sits at the entering node (if mid-click) else the last completed node.
+  const lastCompletedId = completedNodeIds[completedNodeIds.length - 1] ?? null;
+  const tokenNodeId = enteringNodeId ?? lastCompletedId;
+  const tokenPos = tokenNodeId ? posMap[tokenNodeId] : null;
 
   return (
     <div className="rounded-xl border border-zinc-700 bg-zinc-900/60 overflow-hidden">
@@ -72,6 +100,7 @@ export function RunMap({ mapData, availableNodeIds, onSelect, selecting }: RunMa
         className="w-full"
         style={{ minWidth: 340 }}
       >
+
         {/* ── Edges ─────────────────────────────────────────────────── */}
         {nodes.map((node) =>
           node.nextIds.map((nextId) => {
@@ -114,7 +143,7 @@ export function RunMap({ mapData, availableNodeIds, onSelect, selecting }: RunMa
             <g
               key={node.id}
               onClick={available && !selecting ? () => onSelect(node.id) : undefined}
-              style={{ cursor: available && !selecting ? "pointer" : "default" }}
+              className={available && !selecting ? "map-node-available" : undefined}
             >
               {/* Pulse ring for available nodes */}
               {available && (
@@ -169,15 +198,46 @@ export function RunMap({ mapData, availableNodeIds, onSelect, selecting }: RunMa
             </g>
           );
         })}
+
+        {/* ── Player token (dragon) ──────────────────────────────────── */}
+        {tokenPos && (
+          <g
+            pointerEvents="none"
+            style={{
+              transform: `translate(${tokenPos.x}px, ${tokenPos.y}px)`,
+              transition: `transform ${TOKEN_MOVE_MS}ms cubic-bezier(0.4, 0, 0.2, 1)`,
+            }}
+          >
+            {/* Glow halo */}
+            <circle
+              r={NODE_R + 7}
+              fill="rgba(251,191,36,0.07)"
+              stroke="#fbbf24"
+              strokeWidth={1.5}
+              opacity={0.7}
+            />
+            {/* Pixel-art dragon logo — scale(-1,1) flips horizontally around x=0 (the centre) */}
+            <image
+              href="/logo.png"
+              x={-15}
+              y={-15}
+              width={30}
+              height={30}
+              transform="scale(-1, 1)"
+              style={{ imageRendering: "pixelated" }}
+            />
+          </g>
+        )}
       </svg>
 
       {/* Legend */}
-      <div className="flex flex-wrap gap-x-5 gap-y-1 px-4 pb-3 text-xs text-zinc-500">
+      <div className="flex flex-wrap gap-x-5 gap-y-1 px-4 pb-3 text-xs text-zinc-300">
         <span><span className="text-zinc-300">⚔</span> Battle</span>
-        <span><span className="text-amber-500">♛</span> Elite · harder + more $</span>
+        <span><span className="text-amber-500">♛</span> Elite · harder + relic</span>
+        <span><span className="text-red-500">☠</span> Boss · final battle + relic</span>
         <span><span className="text-green-500">✦</span> Shop · free items</span>
         <span><span className="text-blue-500">❤</span> Rest · +1 life</span>
-        <span><span className="text-purple-400">?</span> Event · unknown encounter</span>
+        <span><span className="text-purple-400">?</span> Event · unknown</span>
       </div>
     </div>
   );

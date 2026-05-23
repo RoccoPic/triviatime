@@ -105,6 +105,20 @@ export default function RunEncounterPage() {
       setScreen({ id: "event", run: data.run, event: data.event });
       return;
     }
+    if (data.state === "floor_clear") {
+      mapDataRef.current = data.mapData;
+      setScreen({ id: "floor_clear", run: data.run, mapData: data.mapData, floorCategory: data.floorCategory });
+      return;
+    }
+    if (data.state === "relic_pick") {
+      mapDataRef.current = data.mapData;
+      setScreen({ id: "relic_pick", run: data.run, choices: data.choices, mapData: data.mapData, floorCategory: data.floorCategory });
+      return;
+    }
+    if (data.state === "wave_complete") {
+      setScreen({ id: "wave_complete", run: data.run });
+      return;
+    }
     if (data.run && data.question) {
       setScreen({ id: "encounter", data });
     }

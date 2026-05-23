@@ -9,7 +9,7 @@ import {
   type EventDef,
 } from "@/lib/events";
 import { getBossForCategory } from "@/lib/bosses";
-import { pickRandomRelics, getRelicById, type RelicDef } from "@/lib/relics";
+import { pickRandomRelics, pickRelicsDeterministic, getRelicById, type RelicDef } from "@/lib/relics";
 import {
   LIVES_START,
   RUN_MONEY_START,
@@ -80,6 +80,21 @@ type QuestionRow = { id: string; text: string; options: unknown; correctIndex: n
 export type WaveCompleteState = {
   state: "wave_complete";
   run: RunState;
+};
+
+export type RunFloorClearState = {
+  state: "floor_clear";
+  run: RunState;
+  mapData: RunMapData;
+  floorCategory: { name: string };
+};
+
+export type RunRelicPickState = {
+  state: "relic_pick";
+  run: RunState;
+  choices: RelicDef[];
+  mapData: RunMapData;
+  floorCategory: { name: string };
 };
 
 export type RunState = {
@@ -338,7 +353,7 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
 export async function getRunEncounter(
   runId: string,
   userId: string
-): Promise<RunWithEncounter | RunMapState | RunEventState | "game_over" | null> {
+): Promise<RunWithEncounter | RunMapState | RunEventState | RunFloorClearState | RunRelicPickState | WaveCompleteState | "game_over" | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return "game_over";
 
@@ -367,10 +382,23 @@ export async function getRunEncounter(
     const answersThisFloor = run.answers.filter((a) => a.floorIndex === floorNum);
     const encounterIndex = answersThisFloor.length;
     const qpf = nodeQuestionsPerFloor(node.type, run.wave ?? 1);
-    if (encounterIndex >= qpf) return null;
 
     const category = await prisma.category.findUnique({ where: { id: node.categoryId } });
     if (!category) return null;
+
+    // Node is fully answered but player hasn't returned to map yet (e.g. closed tab mid-shop).
+    // Restore them to the correct interstitial screen.
+    if (encounterIndex >= qpf) {
+      const floorCategory = { name: category.name };
+      // Relic offer pending — deterministic choices so refreshing can't reroll options.
+      if (run.pendingRelicNodeId) {
+        const owned  = (run.relics as string[]) ?? [];
+        const seed   = hashString(runId + run.pendingRelicNodeId);
+        const choices = pickRelicsDeterministic(3, owned, seed);
+        return { state: "relic_pick", run: toRunState(run), choices, mapData, floorCategory };
+      }
+      return { state: "floor_clear", run: toRunState(run), mapData, floorCategory };
+    }
 
     // Hard exclude: every question seen in this run (prevents any in-run repeat).
     // Soft exclude: questions from recent past runs (reduces cross-run repetition).

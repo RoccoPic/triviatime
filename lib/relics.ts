@@ -113,3 +113,24 @@ export function pickRandomRelics(count: number, ownedIds: string[]): RelicDef[] 
   }
   return arr.slice(0, Math.min(count, arr.length));
 }
+
+/**
+ * Deterministic version — same seed always produces the same choices.
+ * Used when resuming a run so relic options can't be rerolled by refreshing.
+ */
+export function pickRelicsDeterministic(count: number, ownedIds: string[], seed: number): RelicDef[] {
+  const pool = RELICS.filter((r) => !ownedIds.includes(r.id));
+  const arr  = [...pool];
+  // Seeded LCG random
+  let s = (seed ^ 0x5DEECE66D) & 0x7fffffff;
+  const rand = () => {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    return s / 0x7fffffff;
+  };
+  // Fisher-Yates with seeded random
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, Math.min(count, arr.length));
+}

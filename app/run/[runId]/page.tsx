@@ -8,6 +8,7 @@ import { RunHUD } from "@/components/RunHUD";
 import { RunMap, TOKEN_MOVE_MS } from "@/components/RunMap";
 import type { RunState, EventDef, RelicDef } from "@/lib/run";
 import type { RunMapData } from "@/lib/map";
+import { getAchievementById } from "@/lib/achievement-defs";
 
 // ── Local types ───────────────────────────────────────────────────────────────
 
@@ -72,9 +73,21 @@ export default function RunEncounterPage() {
   const [busy, setBusy] = useState(false);
   const [peekResult, setPeekResult] = useState<string | null>(null);
   const [shopError, setShopError] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<{ correct: boolean; shieldAbsorbed?: boolean } | null>(null);
   // Boss intro: dismissed per encounter (reset when screen changes away from encounter)
   const [bossIntroAcked, setBossIntroAcked] = useState(false);
+  // Answer result — shown after submitting, cleared on transition to next screen
+  const [answerResult, setAnswerResult] = useState<{
+    selectedIndex: number;
+    correctIndex: number;
+    explanation: string | null;
+    correct: boolean;
+    shieldAbsorbed: boolean;
+  } | null>(null);
+  // Stores the pending screen transition while the wrong-answer feedback is showing
+  const pendingTransitionRef = useRef<(() => void) | null>(null);
+  // Achievement toasts — each auto-dismissed after 4 s
+  const [achToasts, setAchToasts] = useState<{ key: number; icon: string; name: string }[]>([]);
+  const achKeyRef = useRef(0);
 
   // Ref that always holds the most recent mapData so we can access it in
   // submitAnswer / payToSkip even though those API calls don't return mapData.
@@ -85,6 +98,18 @@ export default function RunEncounterPage() {
 
   // Node the player just clicked — drives the dragon token animation before screen change.
   const [enteringNodeId, setEnteringNodeId] = useState<string | null>(null);
+
+  // ── Achievement toasts ──────────────────────────────────────────────────────
+  function showAchievements(ids: string[] | undefined) {
+    if (!ids || ids.length === 0) return;
+    ids.forEach((id) => {
+      const def = getAchievementById(id);
+      if (!def) return;
+      const key = ++achKeyRef.current;
+      setAchToasts((prev) => [...prev, { key, icon: def.icon, name: def.name }]);
+      setTimeout(() => setAchToasts((prev) => prev.filter((t) => t.key !== key)), 4000);
+    });
+  }
 
   // ── Initial load ────────────────────────────────────────────────────────────
   const fetchState = useCallback(async () => {
@@ -103,6 +128,20 @@ export default function RunEncounterPage() {
     }
     if (data.state === "event") {
       setScreen({ id: "event", run: data.run, event: data.event });
+      return;
+    }
+    if (data.state === "floor_clear") {
+      mapDataRef.current = data.mapData;
+      setScreen({ id: "floor_clear", run: data.run, mapData: data.mapData, floorCategory: data.floorCategory });
+      return;
+    }
+    if (data.state === "relic_pick") {
+      mapDataRef.current = data.mapData;
+      setScreen({ id: "relic_pick", run: data.run, choices: data.choices, mapData: data.mapData, floorCategory: data.floorCategory });
+      return;
+    }
+    if (data.state === "wave_complete") {
+      setScreen({ id: "wave_complete", run: data.run });
       return;
     }
     if (data.run && data.question) {
@@ -124,7 +163,8 @@ export default function RunEncounterPage() {
   async function enterNode(nodeId: string) {
     if (busy || (screen.id !== "map" && screen.id !== "rest")) return;
     setBusy(true);
-    setLastResult(null);
+    setAnswerResult(null);
+    pendingTransitionRef.current = null;
     setMapNotification(null);
 
     // Start the dragon token gliding to the selected node immediately.
@@ -235,6 +275,7 @@ export default function RunEncounterPage() {
       });
       const data = await res.json();
       if (!res.ok) return;
+      showAchievements(data.newAchievements);
       mapDataRef.current = data.mapData;
       setScreen({ id: "map", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
     } finally {
@@ -252,6 +293,8 @@ export default function RunEncounterPage() {
         body: JSON.stringify({ runId }),
       });
       if (!res.ok) return;
+      const cashData = await res.json();
+      showAchievements(cashData.newAchievements);
       router.push(`/run/${runId}/game-over`);
     } finally {
       setBusy(false);
@@ -271,6 +314,7 @@ export default function RunEncounterPage() {
       });
       const data = await res.json();
       if (!res.ok) return;
+      showAchievements(data.newAchievements);
       const updatedRun = data.run ?? screen.run;
       setScreen({ id: "floor_clear", run: updatedRun, mapData, floorCategory });
     } finally {
@@ -286,42 +330,82 @@ export default function RunEncounterPage() {
 
   // ── Answer ──────────────────────────────────────────────────────────────────
   async function submitAnswer(selectedIndex: number) {
-    if (screen.id !== "encounter" || busy) return;
+    if (screen.id !== "encounter" || busy || answerResult !== null) return;
     setBusy(true);
-    setLastResult(null);
+    const { data } = screen;
+
+    let result: any;
     try {
-      const { data } = screen;
       const res = await fetch("/api/run/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ runId: data.run.id, questionId: data.question.id, selectedIndex }),
       });
-      const result = await res.json();
+      result = await res.json();
+    } catch {
+      setBusy(false);
+      return;
+    }
+
+    showAchievements(result.newAchievements);
+    const shieldAbsorbed = !result.correct && (data.run.shieldCount ?? 0) > 0;
+
+    setAnswerResult({
+      selectedIndex,
+      correctIndex: result.correctIndex ?? selectedIndex,
+      explanation: result.explanation ?? null,
+      correct: result.correct,
+      shieldAbsorbed,
+    });
+
+    // Build the deferred screen-transition callback
+    const doTransition = () => {
+      setAnswerResult(null);
+      pendingTransitionRef.current = null;
 
       if (result.next === "game_over" || result.next === "run_complete") {
         router.push(`/run/${runId}/game-over`);
-        return;
+        return; // navigating away — leave busy=true
       }
 
-      const shieldAbsorbed = !result.correct && (data.run.shieldCount ?? 0) > 0;
-      setLastResult({ correct: result.correct, shieldAbsorbed });
-
       if (result.next === "floor_clear") {
-        const updatedRun = { ...data.run, livesRemaining: result.livesRemaining, runMoney: result.runMoney, hasFiftyFifty: false, hasHint: false };
-        const floorCategory = data.floorCategory;
+        const updatedRun = {
+          ...data.run,
+          livesRemaining: result.livesRemaining,
+          runMoney: result.runMoney,
+          hasFiftyFifty: false,
+          hasHint: false,
+        };
         const mapData = mapDataRef.current ?? ({} as RunMapData);
         if (result.relicChoices?.length) {
-          setScreen({ id: "relic_pick", run: updatedRun, choices: result.relicChoices, mapData, floorCategory });
+          setScreen({ id: "relic_pick", run: updatedRun, choices: result.relicChoices, mapData, floorCategory: data.floorCategory });
         } else {
-          setScreen({ id: "floor_clear", run: updatedRun, mapData, floorCategory });
+          setScreen({ id: "floor_clear", run: updatedRun, mapData, floorCategory: data.floorCategory });
         }
+        setBusy(false);
         return;
       }
 
       if (result.run) setScreen({ id: "encounter", data: result.run });
-    } finally {
       setBusy(false);
+    };
+
+    if (result.correct || result.next === "game_over" || result.next === "run_complete") {
+      // Auto-advance after a short pause so the player can see the green flash
+      setTimeout(doTransition, 1200);
+    } else {
+      // Wrong answer — release busy so "Got it" button is clickable
+      setBusy(false);
+      pendingTransitionRef.current = doTransition;
     }
+  }
+
+  // Called when the player clicks "Got it →" after a wrong-answer explanation
+  function continueAfterWrong() {
+    const fn = pendingTransitionRef.current;
+    if (!fn || busy) return;
+    setBusy(true);
+    fn();
   }
 
   // ── Skip ────────────────────────────────────────────────────────────────────
@@ -331,7 +415,8 @@ export default function RunEncounterPage() {
     const hasMulligan = data.run.freeMulligan > 0;
     if (!hasMulligan && data.run.runMoney < data.run.skipCostRun) return;
     setBusy(true);
-    setLastResult(null);
+    setAnswerResult(null);
+    pendingTransitionRef.current = null;
     try {
       const res = await fetch("/api/run/skip", {
         method: "POST",
@@ -339,7 +424,7 @@ export default function RunEncounterPage() {
         body: JSON.stringify({ runId: data.run.id, questionId: data.question.id }),
       });
       const result = await res.json();
-      if (result.next === "run_complete") { router.push(`/run/${runId}/game-over`); return; }
+      if (result.next === "run_complete") { showAchievements(result.newAchievements); router.push(`/run/${runId}/game-over`); return; }
       if (result.next === "floor_clear") {
         const newRun = {
           ...data.run,
@@ -387,17 +472,41 @@ export default function RunEncounterPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
+  /** Achievement toasts overlay — rendered on top of every screen */
+  const AchievementToasts = achToasts.length > 0 ? (
+    <div className="fixed bottom-6 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+      {achToasts.map((t) => (
+        <div
+          key={t.key}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-amber-500/40
+                     bg-zinc-900/95 shadow-lg text-sm font-medium animate-fade-in-up"
+        >
+          <span className="text-xl leading-none">{t.icon}</span>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-400 leading-none mb-0.5">
+              Achievement unlocked
+            </p>
+            <p>{t.name}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : null;
+
   if (screen.id === "loading") {
     return <main className="min-h-screen flex items-center justify-center">Loading run…</main>;
   }
 
   if (screen.id === "game_over") {
     return (
-      <main className="min-h-screen flex flex-col items-center justify-center p-8">
-        <h1 className="text-2xl font-bold mb-4">Game Over</h1>
-        <Link href={`/run/${runId}/game-over`} className="text-amber-500 hover:underline">View run summary</Link>
-        <Link href="/run" className="mt-4 hover:underline" style={{ color: "var(--text-muted)" }}>Start a new run</Link>
-      </main>
+      <>
+        {AchievementToasts}
+        <main className="min-h-screen flex flex-col items-center justify-center p-8">
+          <h1 className="text-2xl font-bold mb-4">Game Over</h1>
+          <Link href={`/run/${runId}/game-over`} className="text-amber-500 hover:underline">View run summary</Link>
+          <Link href="/run" className="mt-4 hover:underline" style={{ color: "var(--text-muted)" }}>Start a new run</Link>
+        </main>
+      </>
     );
   }
 
@@ -409,6 +518,7 @@ export default function RunEncounterPage() {
 
     return (
       <main className="min-h-screen p-4 md:p-8">
+        {AchievementToasts}
         <div className="max-w-3xl mx-auto flex flex-col gap-4">
           {/* Stats bar */}
           <div className="flex items-center justify-between flex-wrap gap-3 px-1">
@@ -597,6 +707,7 @@ export default function RunEncounterPage() {
     const diff = difficultyInfo(run.playerDifficulty);
     return (
       <main className="min-h-screen p-4 md:p-8">
+        {AchievementToasts}
         <div className="max-w-2xl mx-auto flex flex-col gap-4">
           <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-center text-zinc-100">
             <p className="text-amber-400 text-sm font-medium uppercase tracking-widest mb-1">Node cleared</p>
@@ -606,11 +717,6 @@ export default function RunEncounterPage() {
               <div><p className="text-2xl font-bold text-amber-400">${run.runMoney}</p><p className="text-zinc-300 text-sm mt-1">Run $</p></div>
               <div><p className={`text-2xl font-bold ${diff.className}`}>{diff.label}</p><p className="text-zinc-300 text-sm mt-1">Difficulty</p></div>
             </div>
-            {lastResult && (
-              <p className={`mt-3 text-sm font-medium ${lastResult.correct ? "text-green-400" : "text-red-400"}`}>
-                {lastResult.correct ? "Correct!" : lastResult.shieldAbsorbed ? "Wrong — shield absorbed it." : "Wrong — one life lost."}
-              </p>
-            )}
           </div>
 
           <ShopGrid
@@ -639,6 +745,7 @@ export default function RunEncounterPage() {
     const { run, choices } = screen;
     return (
       <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+        {AchievementToasts}
         <div className="max-w-xl w-full mx-auto flex flex-col gap-6">
           {/* Header */}
           <div className="text-center">
@@ -700,6 +807,7 @@ export default function RunEncounterPage() {
     const { run } = screen;
     return (
       <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+        {AchievementToasts}
         <div className="max-w-md w-full mx-auto flex flex-col gap-6">
           {/* Trophy card */}
           <div className="rounded-xl border border-amber-500/60 bg-zinc-900/60 p-8 text-center text-zinc-100">
@@ -805,6 +913,7 @@ export default function RunEncounterPage() {
 
   return (
     <main className="min-h-screen p-4 md:p-8">
+      {AchievementToasts}
       <div className="max-w-2xl mx-auto flex flex-col gap-6">
         <RunHUD
           lives={run.livesRemaining}
@@ -828,27 +937,27 @@ export default function RunEncounterPage() {
           <p className="text-amber-400/90 text-sm font-medium mb-2">Trivia monster — {monsterTitle}</p>
           <h2 className="text-xl font-semibold mb-6">{question.text}</h2>
 
-          {lastResult !== null && (
-            <p className={`mb-4 font-medium ${lastResult.correct ? "text-green-400" : "text-red-400"}`}>
-              {lastResult.correct
-                ? "Correct!"
-                : lastResult.shieldAbsorbed
-                ? "Wrong — shield absorbed it."
-                : "Wrong — one life lost."}
-            </p>
-          )}
-
           <div className="flex flex-col gap-3">
             {question.options.map((opt, i) => {
               const eliminated = question.eliminatedIndices?.includes(i) ?? false;
+              // Determine color feedback for this option after an answer is submitted
+              const isCorrectOption  = answerResult !== null && i === answerResult.correctIndex;
+              const isWrongSelection = answerResult !== null && !answerResult.correct && i === answerResult.selectedIndex;
+
+              let colorClass = "";
+              if (isCorrectOption)  colorClass = "!border-green-500 !bg-green-900/30 !text-green-100";
+              if (isWrongSelection) colorClass = "!border-red-500  !bg-red-900/30   !text-red-100";
+
               return (
                 <button
                   key={i}
                   onClick={() => submitAnswer(i)}
-                  disabled={busy || eliminated}
+                  disabled={busy || eliminated || answerResult !== null}
                   className={`w-full text-left px-4 py-3 rounded-lg border transition ${
                     eliminated
                       ? "bg-zinc-900/30 border-zinc-700/30 text-zinc-600 line-through cursor-not-allowed"
+                      : answerResult !== null
+                      ? `bg-zinc-800/60 border-zinc-600/50 text-zinc-300 cursor-default ${colorClass}`
                       : "bg-zinc-800 border-zinc-600 text-zinc-100 hover:border-amber-500/50 hover:bg-zinc-700/80 disabled:opacity-50"
                   }`}
                 >
@@ -858,18 +967,51 @@ export default function RunEncounterPage() {
             })}
           </div>
 
-          <div className="mt-6 pt-4 border-t border-zinc-700 flex justify-between items-center">
-            <span className="text-zinc-300 text-sm">
-              {hasMulligan ? `Free skip (${run.freeMulligan} left)` : "Skip (no life lost)"}
-            </span>
-            <button
-              onClick={payToSkip}
-              disabled={!canSkip || busy}
-              className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm text-zinc-100"
-            >
-              {hasMulligan ? "Skip free" : `Pay $${run.skipCostRun} to skip`}
-            </button>
-          </div>
+          {/* Answer feedback panel */}
+          {answerResult !== null && (
+            <div className="mt-5">
+              {answerResult.correct ? (
+                <p className="text-green-400 font-semibold text-sm animate-pulse">
+                  ✓ Correct! Loading next question…
+                </p>
+              ) : (
+                <div className="rounded-lg border border-red-500/30 bg-red-950/30 p-4 flex flex-col gap-3">
+                  <p className="text-red-400 font-semibold text-sm">
+                    {answerResult.shieldAbsorbed
+                      ? "✗ Wrong — shield absorbed the hit."
+                      : "✗ Wrong — one life lost."}
+                  </p>
+                  {answerResult.explanation && (
+                    <p className="text-zinc-300 text-sm leading-relaxed">
+                      💡 {answerResult.explanation}
+                    </p>
+                  )}
+                  <button
+                    onClick={continueAfterWrong}
+                    disabled={busy}
+                    className="self-end px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-sm font-medium disabled:opacity-50 transition"
+                  >
+                    Got it →
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {answerResult === null && (
+            <div className="mt-6 pt-4 border-t border-zinc-700 flex justify-between items-center">
+              <span className="text-zinc-300 text-sm">
+                {hasMulligan ? `Free skip (${run.freeMulligan} left)` : "Skip (no life lost)"}
+              </span>
+              <button
+                onClick={payToSkip}
+                disabled={!canSkip || busy}
+                className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm text-zinc-100"
+              >
+                {hasMulligan ? "Skip free" : `Pay $${run.skipCostRun} to skip`}
+              </button>
+            </div>
+          )}
         </div>
 
         <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Exit to home</Link>

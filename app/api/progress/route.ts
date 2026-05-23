@@ -11,7 +11,7 @@ export async function GET() {
 
   const userId = session.user.id;
 
-  const [user, runs, answersWithCategories] = await Promise.all([
+  const [user, allRuns, answers, categories] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       select: { collectionMoney: true },
@@ -19,41 +19,102 @@ export async function GET() {
     prisma.run.findMany({
       where: { userId },
       orderBy: { startedAt: "desc" },
-      take: 20,
-      select: { id: true, score: true, currentFloor: true, startedAt: true, endedAt: true },
+      select: {
+        id: true,
+        score: true,
+        currentFloor: true,
+        wave: true,
+        won: true,
+        runClass: true,
+        livesRemaining: true,
+        relics: true,
+        runMoney: true,
+        startedAt: true,
+        endedAt: true,
+      },
     }),
     prisma.answer.findMany({
       where: { run: { userId } },
-      select: { correct: true, skipped: true, questionId: true, question: { select: { categoryId: true } } },
+      select: {
+        runId: true,
+        correct: true,
+        skipped: true,
+        question: { select: { categoryId: true } },
+      },
+    }),
+    prisma.category.findMany({
+      select: { id: true, slug: true, name: true },
     }),
   ]);
 
-  const categoryIds = Array.from(new Set(answersWithCategories.map((a) => a.question.categoryId)));
-  const categories = await prisma.category.findMany({
-    where: { id: { in: categoryIds } },
-    select: { id: true, slug: true, name: true },
-  });
-  const byCategory: Record<string, { correct: number; total: number }> = {};
-  for (const c of categories) {
-    byCategory[c.slug] = { correct: 0, total: 0 };
+  // ── Per-run answer counts ─────────────────────────────────────────────────
+  const answersByRun: Record<string, { correct: number; wrong: number; skipped: number }> = {};
+  for (const a of answers) {
+    if (!answersByRun[a.runId]) answersByRun[a.runId] = { correct: 0, wrong: 0, skipped: 0 };
+    if (a.skipped)       answersByRun[a.runId].skipped++;
+    else if (a.correct)  answersByRun[a.runId].correct++;
+    else                 answersByRun[a.runId].wrong++;
   }
-  for (const a of answersWithCategories) {
-    const cat = categories.find((c) => c.id === a.question.categoryId);
-    if (cat) {
-      byCategory[cat.slug].total += 1;
-      if (a.correct) byCategory[cat.slug].correct += 1;
-    }
+
+  // ── Career stats (completed runs only) ────────────────────────────────────
+  const completedRuns = allRuns.filter((r) => r.endedAt !== null);
+  const wonRuns       = completedRuns.filter((r) => r.won === true);
+
+  const bestScore     = completedRuns.reduce((m, r) => Math.max(m, r.score), 0);
+  const highestWave   = completedRuns.reduce((m, r) => Math.max(m, r.wave), 1);
+  const bestRunMoney  = completedRuns.reduce((m, r) => Math.max(m, r.runMoney), 0);
+
+  // Best class = class with most wins
+  const winsByClass: Record<string, number> = {};
+  for (const r of wonRuns) {
+    winsByClass[r.runClass] = (winsByClass[r.runClass] ?? 0) + 1;
   }
+  const bestClass = Object.entries(winsByClass).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+  // ── Category accuracy ─────────────────────────────────────────────────────
+  const catMap = new Map(categories.map((c) => [c.id, c]));
+  const byCategory: Record<string, { name: string; correct: number; total: number }> = {};
+
+  for (const a of answers) {
+    const cat = catMap.get(a.question.categoryId);
+    if (!cat) continue;
+    if (!byCategory[cat.slug]) byCategory[cat.slug] = { name: cat.name, correct: 0, total: 0 };
+    byCategory[cat.slug].total += 1;
+    if (a.correct) byCategory[cat.slug].correct += 1;
+  }
+
+  // ── Runs for display (most recent 30, enriched) ───────────────────────────
+  const runsForDisplay = allRuns.slice(0, 30).map((r) => ({
+    id:          r.id,
+    score:       r.score,
+    floor:       r.currentFloor,
+    wave:        r.wave,
+    won:         r.won,
+    runClass:    r.runClass,
+    livesRemaining: r.livesRemaining,
+    relics:      (r.relics as string[]) ?? [],
+    runMoney:    r.runMoney,
+    startedAt:   r.startedAt,
+    endedAt:     r.endedAt,
+    correct:     answersByRun[r.id]?.correct  ?? 0,
+    wrong:       answersByRun[r.id]?.wrong    ?? 0,
+    skipped:     answersByRun[r.id]?.skipped  ?? 0,
+  }));
 
   return NextResponse.json({
     collectionMoney: user?.collectionMoney ?? 0,
+    career: {
+      totalRuns:    completedRuns.length,
+      wins:         wonRuns.length,
+      winRate:      completedRuns.length > 0
+                      ? Math.round((wonRuns.length / completedRuns.length) * 100)
+                      : 0,
+      bestScore,
+      highestWave,
+      bestRunMoney,
+      bestClass,
+    },
     byCategory,
-    runs: runs.map((r) => ({
-      id: r.id,
-      score: r.score,
-      floor: r.currentFloor,
-      startedAt: r.startedAt,
-      endedAt: r.endedAt,
-    })),
+    runs: runsForDisplay,
   });
 }

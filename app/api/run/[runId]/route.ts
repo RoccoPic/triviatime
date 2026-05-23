@@ -17,11 +17,39 @@ export async function GET(
   const data = await getRunEncounter(runId, session.user.id);
 
   if (data === "game_over") {
-    const run = await prisma.run.findFirst({
-      where: { id: runId, userId: session.user.id },
-      select: { score: true, currentFloor: true, runMoney: true },
+    const [run, answers] = await Promise.all([
+      prisma.run.findFirst({
+        where: { id: runId, userId: session.user.id },
+        select: {
+          score: true,
+          currentFloor: true,
+          runMoney: true,
+          wave: true,
+          won: true,
+          runClass: true,
+          livesRemaining: true,
+          lowestLives: true,
+          relics: true,
+          startedAt: true,
+          endedAt: true,
+        },
+      }),
+      prisma.answer.findMany({
+        where: { runId },
+        select: { correct: true, skipped: true },
+      }),
+    ]);
+
+    const correct  = answers.filter((a) => a.correct && !a.skipped).length;
+    const wrong    = answers.filter((a) => !a.correct && !a.skipped).length;
+    const skipped  = answers.filter((a) => a.skipped).length;
+
+    return NextResponse.json({
+      gameOver: true,
+      run: run
+        ? { ...run, relics: (run.relics as string[]) ?? [], correct, wrong, skipped }
+        : undefined,
     });
-    return NextResponse.json({ gameOver: true, run: run ?? undefined });
   }
   if (!data) {
     return NextResponse.json({ error: "Run or encounter not found" }, { status: 404 });

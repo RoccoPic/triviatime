@@ -9,7 +9,9 @@ import {
   type EventDef,
 } from "@/lib/events";
 import { getBossForCategory } from "@/lib/bosses";
-import { pickRandomRelics, getRelicById, type RelicDef } from "@/lib/relics";
+import { pickRandomRelics, pickRelicsDeterministic, getRelicById, type RelicDef } from "@/lib/relics";
+import { checkAndGrantAchievements } from "@/lib/achievements";
+import { getClassById } from "@/lib/class-defs";
 import {
   LIVES_START,
   RUN_MONEY_START,
@@ -82,6 +84,21 @@ export type WaveCompleteState = {
   run: RunState;
 };
 
+export type RunFloorClearState = {
+  state: "floor_clear";
+  run: RunState;
+  mapData: RunMapData;
+  floorCategory: { name: string };
+};
+
+export type RunRelicPickState = {
+  state: "relic_pick";
+  run: RunState;
+  choices: RelicDef[];
+  mapData: RunMapData;
+  floorCategory: { name: string };
+};
+
 export type RunState = {
   id: string;
   livesRemaining: number;
@@ -105,6 +122,7 @@ export type RunState = {
   floorCategoryOrder: string[];
   relics: string[];
   comboCount: number;
+  runClass: string;
 };
 
 export type RunWithEncounter = {
@@ -195,6 +213,7 @@ function toRunState(run: any): RunState {
     floorCategoryOrder: (run.floorCategoryOrder as string[]) ?? [],
     relics: (run.relics as string[]) ?? [],
     comboCount: run.comboCount ?? 0,
+    runClass: run.runClass ?? "regular",
   };
 }
 
@@ -313,21 +332,64 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
 
   const mapData = generateMap(pool);
 
+  // ── Class bonuses ──────────────────────────────────────────────────────────
+  const runClass = user?.selectedClass ?? "regular";
+
+  // Lives: base + upgrade + class bonus
+  let livesStart = LIVES_START + (user?.upgExtraLife ? 1 : 0);
+  if (runClass === "warrior")   livesStart += 1;
+  if (runClass === "berserker") livesStart += 2;
+
+  // Start money (take the highest of upgrade vs. class bonus)
+  let startMoney = RUN_MONEY_START;
+  if (user?.upgHeadStart) startMoney = Math.max(startMoney, 30);
+  if (runClass === "merchant")  startMoney = Math.max(startMoney, 40);
+
+  // Starting difficulty (take the lowest — easier is better for the player)
+  let startDiff = PLAYER_DIFFICULTY_START;
+  if (user?.upgStartDiff)      startDiff = Math.min(startDiff, 30);
+  if (runClass === "scholar")  startDiff = Math.min(startDiff, 35);
+  if (runClass === "mystic")   startDiff = Math.min(startDiff, 25);
+
+  // Skip cost (take the lowest)
+  let skipCost = SKIP_COST;
+  if (user?.upgReducedSkip)  skipCost = Math.min(skipCost, 20);
+  if (runClass === "rogue")  skipCost = Math.min(skipCost, 12);
+
+  // Money per correct (take the highest)
+  let moneyPC = MONEY_PER_CORRECT;
+  if (user?.upgMoneyBonus)    moneyPC = Math.max(moneyPC, 20);
+  if (runClass === "scholar") moneyPC = Math.max(moneyPC, 20);
+
+  // Streak for life (take the lowest — smaller streak threshold is better)
+  let streakFL = STREAK_FOR_LIFE;
+  if (user?.upgLuckyStreak)  streakFL = Math.min(streakFL, 2);
+  if (runClass === "mystic") streakFL = Math.min(streakFL, 2);
+
   const run = await prisma.run.create({
     data: {
       userId,
-      livesRemaining: LIVES_START + (user?.upgExtraLife ? 1 : 0),
-      runMoney: user?.upgHeadStart ? 30 : RUN_MONEY_START,
+      runClass,
+      livesRemaining: livesStart,
+      lowestLives: livesStart,
+      runMoney: startMoney,
       currentFloor: 1,
       mapData: mapData as object,
       currentNodeId: null,
-      playerDifficulty: user?.upgStartDiff ? 30 : PLAYER_DIFFICULTY_START,
-      skipCostRun: user?.upgReducedSkip ? 20 : SKIP_COST,
-      moneyPerCorrectRun: user?.upgMoneyBonus ? 20 : MONEY_PER_CORRECT,
-      streakForLifeRun: user?.upgLuckyStreak ? 2 : STREAK_FOR_LIFE,
+      playerDifficulty: startDiff,
+      skipCostRun: skipCost,
+      moneyPerCorrectRun: moneyPC,
+      streakForLifeRun: streakFL,
       diffStepRun: user?.upgResilience ? 3 : PLAYER_DIFFICULTY_STEP,
       shieldCount: user?.upgShield ? 1 : 0,
       secondWindAvailable: user?.upgSecondWind ?? false,
+      // Rogue: start with 2 free skips
+      freeMulligan: runClass === "rogue" ? 2 : 0,
+      // Mystic: start with 50/50 active
+      hasFiftyFifty: runClass === "mystic",
+      // Berserker: all money doubled via multiplier; wrong answers cost 2 lives
+      moneyMultiplier: runClass === "berserker" ? 2.0 : 1.0,
+      livesPerWrongAnswer: runClass === "berserker" ? 2 : 1,
     },
   });
 
@@ -338,7 +400,7 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
 export async function getRunEncounter(
   runId: string,
   userId: string
-): Promise<RunWithEncounter | RunMapState | RunEventState | "game_over" | null> {
+): Promise<RunWithEncounter | RunMapState | RunEventState | RunFloorClearState | RunRelicPickState | WaveCompleteState | "game_over" | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return "game_over";
 
@@ -367,10 +429,23 @@ export async function getRunEncounter(
     const answersThisFloor = run.answers.filter((a) => a.floorIndex === floorNum);
     const encounterIndex = answersThisFloor.length;
     const qpf = nodeQuestionsPerFloor(node.type, run.wave ?? 1);
-    if (encounterIndex >= qpf) return null;
 
     const category = await prisma.category.findUnique({ where: { id: node.categoryId } });
     if (!category) return null;
+
+    // Node is fully answered but player hasn't returned to map yet (e.g. closed tab mid-shop).
+    // Restore them to the correct interstitial screen.
+    if (encounterIndex >= qpf) {
+      const floorCategory = { name: category.name };
+      // Relic offer pending — deterministic choices so refreshing can't reroll options.
+      if (run.pendingRelicNodeId) {
+        const owned  = (run.relics as string[]) ?? [];
+        const seed   = hashString(runId + run.pendingRelicNodeId);
+        const choices = pickRelicsDeterministic(3, owned, seed);
+        return { state: "relic_pick", run: toRunState(run), choices, mapData, floorCategory };
+      }
+      return { state: "floor_clear", run: toRunState(run), mapData, floorCategory };
+    }
 
     // Hard exclude: every question seen in this run (prevents any in-run repeat).
     // Soft exclude: questions from recent past runs (reduces cross-run repetition).
@@ -475,7 +550,7 @@ export async function recordAnswer(
   userId: string,
   questionId: string,
   selectedIndex: number
-): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[] }> {
+): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[]; newAchievements?: string[]; correctIndex?: number; explanation?: string | null }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { correct: false, livesRemaining: 0, runMoney: 0, next: "game_over" };
 
@@ -493,6 +568,9 @@ export async function recordAnswer(
   }
 
   const correct = question.correctIndex === selectedIndex;
+  // Included in every response so the UI can reveal the correct answer and show an explanation
+  const answerInfo = { correctIndex: question.correctIndex, explanation: question.citation ?? null };
+
   const answersThisFloor = run.answers.filter((a) => a.floorIndex === activeFloor);
   const encounterIndex = answersThisFloor.length;
 
@@ -507,6 +585,8 @@ export async function recordAnswer(
   const diffStep = run.diffStepRun ?? PLAYER_DIFFICULTY_STEP;
   const moneyPerCorrect = run.moneyPerCorrectRun ?? MONEY_PER_CORRECT;
   const maxLives = hasRelic(run, "relentless-spirit") || hasRelic(run, "cats-paw") ? 8 : 6; // cats-paw grant tracked separately
+  // Berserker class: wrong answers cost 2 lives; shield still fully absorbs one hit
+  const livesPerWrong = run.livesPerWrongAnswer ?? 1;
 
   // Combo: increment on correct, reset on wrong
   const newComboCount = correct ? (run.comboCount ?? 0) + 1 : 0;
@@ -532,9 +612,9 @@ export async function recordAnswer(
     playerDifficulty = Math.max(DIFFICULTY_SCORE_MIN, playerDifficulty - PLAYER_DIFFICULTY_STEP);
   } else {
     if (shieldCount > 0) {
-      shieldCount -= 1;
+      shieldCount -= 1; // shield absorbs all damage regardless of livesPerWrong
     } else {
-      livesRemaining -= 1;
+      livesRemaining -= livesPerWrong;
     }
     // Relic: Adrenaline Rush — wrong answers don't raise difficulty
     if (!hasRelic(run, "adrenaline-rush")) {
@@ -555,6 +635,9 @@ export async function recordAnswer(
   // Relic: Hardened Mind — difficulty cap at 70
   if (hasRelic(run, "hardened-mind")) playerDifficulty = Math.min(playerDifficulty, 70);
 
+  // Track the lowest lives reached this run (used by survivor / comeback-kid achievements)
+  const newLowestLives = Math.min(livesRemaining, run.lowestLives ?? run.livesRemaining);
+
   await prisma.answer.create({
     data: { runId, questionId, correct, skipped: false, floorIndex: activeFloor, encounterIndex },
   });
@@ -573,7 +656,16 @@ export async function recordAnswer(
 
   if (livesRemaining <= 0) {
     await endRun(runId, userId);
-    return { correct, livesRemaining: 0, runMoney, next: "game_over" };
+    const gameOverAchs = await checkAndGrantAchievements(run.userId, {
+      event: "run_end",
+      score: run.score + (correct ? 1 : 0),
+      livesRemaining: 0,
+      lowestLives: Math.min(0, newLowestLives),
+      won: false,
+      wrongAnswers: [...run.answers, { correct, skipped: false }].filter((a) => !a.correct && !a.skipped).length,
+      skippedAnswers: run.answers.filter((a) => a.skipped).length,
+    });
+    return { correct, livesRemaining: 0, runMoney, next: "game_over", newAchievements: gameOverAchs, ...answerInfo };
   }
 
   // Determine if this is the last question of the node (for floor_clear routing + relic offers)
@@ -596,8 +688,19 @@ export async function recordAnswer(
       hasHint: false,
       secondWindAvailable,
       comboCount: newComboCount,
+      lowestLives: newLowestLives,
       ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
+  });
+
+  // ── Achievement checks ──────────────────────────────────────────────────────
+  const newScore = run.score + (correct ? 1 : 0);
+  const answerAchs = await checkAndGrantAchievements(run.userId, {
+    event: "answer",
+    score: newScore,
+    comboCount: newComboCount,
+    runMoney,
+    livesRemaining,
   });
 
   if (isFloorClear) {
@@ -605,15 +708,25 @@ export async function recordAnswer(
       const relicChoices = shouldOfferRelic
         ? pickRandomRelics(3, (run.relics as string[]) ?? [])
         : undefined;
-      return { correct, livesRemaining, runMoney, next: "floor_clear", relicChoices };
+      return { correct, livesRemaining, runMoney, next: "floor_clear", relicChoices, newAchievements: answerAchs, ...answerInfo };
     }
     // Legacy linear
     const order = (run.floorCategoryOrder as string[]) ?? [];
     if (run.currentFloor >= order.length) {
       await completeRun(runId, userId);
-      return { correct, livesRemaining, runMoney, next: "run_complete" };
+      const allAnswers = [...run.answers, { correct, skipped: false }];
+      const endAchs = await checkAndGrantAchievements(run.userId, {
+        event: "run_end",
+        score: newScore,
+        livesRemaining,
+        lowestLives: newLowestLives,
+        won: true,
+        wrongAnswers: allAnswers.filter((a) => !a.correct && !a.skipped).length,
+        skippedAnswers: allAnswers.filter((a) => a.skipped).length,
+      });
+      return { correct, livesRemaining, runMoney, next: "run_complete", newAchievements: [...answerAchs, ...endAchs], ...answerInfo };
     }
-    return { correct, livesRemaining, runMoney, next: "floor_clear" };
+    return { correct, livesRemaining, runMoney, next: "floor_clear", newAchievements: answerAchs, ...answerInfo };
   }
 
   const nextEncounter = await getRunEncounter(runId, userId);
@@ -623,6 +736,8 @@ export async function recordAnswer(
     runMoney,
     next: "encounter",
     run: nextEncounter && nextEncounter !== "game_over" && "question" in nextEncounter ? nextEncounter : undefined,
+    newAchievements: answerAchs,
+    ...answerInfo,
   };
 }
 
@@ -630,7 +745,7 @@ export async function recordSkip(
   runId: string,
   userId: string,
   questionId: string
-): Promise<{ ok: boolean; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[] }> {
+): Promise<{ ok: boolean; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[]; newAchievements?: string[] }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { ok: false, next: "game_over" };
 
@@ -667,7 +782,8 @@ export async function recordSkip(
       freeMulligan: hasMulligan ? (run.freeMulligan ?? 0) - 1 : (run.freeMulligan ?? 0),
       hasFiftyFifty: false,
       hasHint: false,
-      comboCount: 0,  // skipping breaks the streak
+      // Rogue class: skipping doesn't break the combo streak
+      comboCount: run.runClass === "rogue" ? (run.comboCount ?? 0) : 0,
       ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
   });
@@ -682,7 +798,17 @@ export async function recordSkip(
     const catOrder = (run.floorCategoryOrder as string[]) ?? [];
     if (run.currentFloor >= catOrder.length) {
       await completeRun(runId, userId);
-      return { ok: true, next: "run_complete" };
+      // Legacy run complete via skip — check run_end achievements
+      const endAchs = await checkAndGrantAchievements(run.userId, {
+        event: "run_end",
+        score: run.score,
+        livesRemaining: run.livesRemaining,
+        lowestLives: run.lowestLives ?? run.livesRemaining,
+        won: true,
+        wrongAnswers: [...run.answers, { correct: false, skipped: true }].filter((a) => !a.correct && !a.skipped).length,
+        skippedAnswers: run.answers.filter((a) => a.skipped).length + 1,
+      });
+      return { ok: true, next: "run_complete", newAchievements: endAchs };
     }
     return { ok: true, next: "floor_clear" };
   }
@@ -705,7 +831,9 @@ export async function purchaseShopItem(
 
   const baseCost = SHOP_PRICES[item];
   // Relic: Bargain Hunter — shop items 20% cheaper
-  const cost = hasRelic(run, "bargain-hunter") ? Math.floor(baseCost * 0.8) : baseCost;
+  // Class: Merchant — also gets 20% off (same discount, doesn't stack doubly)
+  const hasDiscount = hasRelic(run, "bargain-hunter") || run.runClass === "merchant";
+  const cost = hasDiscount ? Math.floor(baseCost * 0.8) : baseCost;
   if (run.runMoney < cost) return { ok: false, error: "Not enough run money" };
 
   if (item === "fifty_fifty" && run.hasFiftyFifty) return { ok: false, error: "Already active" };
@@ -855,13 +983,15 @@ export async function enterNode(
 
   // Battle / elite / boss: set as active node, return first encounter.
   // Relic: Iron Shield — automatically grant +1 shield on entry.
+  // Class: Warrior — also grants +1 shield on every battle entry.
   const runRelics = (run.relics as string[]) ?? [];
+  const shieldOnEntry = runRelics.includes("iron-shield") || run.runClass === "warrior";
   await prisma.run.update({
     where: { id: runId },
     data: {
       currentNodeId: nodeId,
       currentFloor: floorNum,
-      ...(runRelics.includes("iron-shield") ? { shieldCount: { increment: 1 } } : {}),
+      ...(shieldOnEntry ? { shieldCount: { increment: 1 } } : {}),
     },
   });
 
@@ -1049,7 +1179,7 @@ export async function endRun(runId: string, userId: string): Promise<void> {
 }
 
 /** Advance to the next wave: bigger map, harder starting difficulty, keep all run stats. */
-export async function advanceWave(runId: string, userId: string): Promise<RunMapState | null> {
+export async function advanceWave(runId: string, userId: string): Promise<(RunMapState & { newAchievements: string[] }) | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId } });
   if (!run || run.endedAt) return null;
 
@@ -1076,7 +1206,8 @@ export async function advanceWave(runId: string, userId: string): Promise<RunMap
   });
 
   const available = getAvailableNodeIds(mapData);
-  return { state: "map", run: toRunState(updated), mapData, availableNodeIds: available };
+  const waveAchs = await checkAndGrantAchievements(run.userId, { event: "wave_advance", wave: newWave });
+  return { state: "map", run: toRunState(updated), mapData, availableNodeIds: available, newAchievements: waveAchs };
 }
 
 /** Claim a relic from the pending offer after clearing a boss or elite node. */
@@ -1084,7 +1215,7 @@ export async function pickRelic(
   runId: string,
   userId: string,
   relicId: string,
-): Promise<{ ok: boolean; error?: string; run?: RunState }> {
+): Promise<{ ok: boolean; error?: string; run?: RunState; newAchievements?: string[] }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId } });
   if (!run || run.endedAt) return { ok: false, error: "Run not found" };
 
@@ -1113,13 +1244,17 @@ export async function pickRelic(
     },
   });
 
-  return { ok: true, run: toRunState(updated) };
+  const relicAchs = await checkAndGrantAchievements(run.userId, {
+    event: "relic_pick",
+    relicsCount: newRelics.length,
+  });
+  return { ok: true, run: toRunState(updated), newAchievements: relicAchs };
 }
 
 /** Cash out at end of wave: award 100% of run money to collection, end the run. */
-export async function cashOut(runId: string, userId: string): Promise<{ ok: boolean; collectionMoneyEarned: number }> {
-  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
-  if (!run || run.endedAt) return { ok: false, collectionMoneyEarned: 0 };
+export async function cashOut(runId: string, userId: string): Promise<{ ok: boolean; collectionMoneyEarned: number; newAchievements: string[] }> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
+  if (!run || run.endedAt) return { ok: false, collectionMoneyEarned: 0, newAchievements: [] };
 
   const toAdd = run.runMoney; // 100% conversion — the reward for completing a wave
   await prisma.run.update({ where: { id: runId }, data: { endedAt: new Date(), won: true } });
@@ -1127,5 +1262,17 @@ export async function cashOut(runId: string, userId: string): Promise<{ ok: bool
     await prisma.user.update({ where: { id: userId }, data: { collectionMoney: { increment: toAdd } } });
   }
 
-  return { ok: true, collectionMoneyEarned: toAdd };
+  const wrongAnswers  = run.answers.filter((a) => !a.correct && !a.skipped).length;
+  const skippedAnswers = run.answers.filter((a) => a.skipped).length;
+  const newAchievements = await checkAndGrantAchievements(run.userId, {
+    event: "run_end",
+    score: run.score,
+    livesRemaining: run.livesRemaining,
+    lowestLives: run.lowestLives ?? run.livesRemaining,
+    won: true,
+    wrongAnswers,
+    skippedAnswers,
+  });
+
+  return { ok: true, collectionMoneyEarned: toAdd, newAchievements };
 }

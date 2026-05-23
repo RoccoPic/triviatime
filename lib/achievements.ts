@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { ACHIEVEMENTS } from "@/lib/achievement-defs";
+import { ACHIEVEMENT_TO_CLASS } from "@/lib/class-defs";
 
 export type { AchievementDef, AchievementTier } from "@/lib/achievement-defs";
 export { ACHIEVEMENTS, getAchievementById } from "@/lib/achievement-defs";
@@ -97,6 +98,17 @@ export async function checkAndGrantAchievements(
     data: toGrant.map((achievementId) => ({ userId, achievementId })),
     skipDuplicates: true,
   });
+
+  // Side effect: unlock any classes gated behind these achievements
+  const classIds = Array.from(new Set(
+    toGrant.map((id) => ACHIEVEMENT_TO_CLASS[id]).filter(Boolean) as string[]
+  ));
+  if (classIds.length > 0) {
+    await prisma.userClass.createMany({
+      data: classIds.map((classId) => ({ userId, classId })),
+      skipDuplicates: true,
+    });
+  }
 
   return toGrant;
 }

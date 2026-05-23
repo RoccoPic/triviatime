@@ -24,8 +24,11 @@ model User {
   upgSecondWind   Boolean            @default(false)
   upgShield       Boolean            @default(false)
   upgStartDiff    Boolean            @default(false)
+  // Active class selection (persists across runs)
+  selectedClass   String             @default("regular")
   accounts        Account[]
   achievements    UserAchievement[]
+  classes         UserClass[]
   runs            Run[]
   sessions        Session[]
 }
@@ -126,9 +129,24 @@ model Run {
   comboCount          Int       @default(0)
   // Lowest lives reached during the run — used for comeback-kid / survivor achievements
   lowestLives         Int       @default(3)
+  // Class the player chose when starting this run
+  runClass            String    @default("regular")
+  // Lives lost per wrong answer (berserker = 2, everyone else = 1)
+  livesPerWrongAnswer Int       @default(1)
   answers             Answer[]
   user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+}
+
+model UserClass {
+  id         String   @id @default(cuid())
+  userId     String
+  classId    String
+  unlockedAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, classId])
   @@index([userId])
 }
 

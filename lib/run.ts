@@ -11,6 +11,7 @@ import {
 import { getBossForCategory } from "@/lib/bosses";
 import { pickRandomRelics, pickRelicsDeterministic, getRelicById, type RelicDef } from "@/lib/relics";
 import { checkAndGrantAchievements } from "@/lib/achievements";
+import { getClassById } from "@/lib/class-defs";
 import {
   LIVES_START,
   RUN_MONEY_START,
@@ -121,6 +122,7 @@ export type RunState = {
   floorCategoryOrder: string[];
   relics: string[];
   comboCount: number;
+  runClass: string;
 };
 
 export type RunWithEncounter = {
@@ -211,6 +213,7 @@ function toRunState(run: any): RunState {
     floorCategoryOrder: (run.floorCategoryOrder as string[]) ?? [],
     relics: (run.relics as string[]) ?? [],
     comboCount: run.comboCount ?? 0,
+    runClass: run.runClass ?? "regular",
   };
 }
 
@@ -329,22 +332,64 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
 
   const mapData = generateMap(pool);
 
+  // ── Class bonuses ──────────────────────────────────────────────────────────
+  const runClass = user?.selectedClass ?? "regular";
+
+  // Lives: base + upgrade + class bonus
+  let livesStart = LIVES_START + (user?.upgExtraLife ? 1 : 0);
+  if (runClass === "warrior")   livesStart += 1;
+  if (runClass === "berserker") livesStart += 2;
+
+  // Start money (take the highest of upgrade vs. class bonus)
+  let startMoney = RUN_MONEY_START;
+  if (user?.upgHeadStart) startMoney = Math.max(startMoney, 30);
+  if (runClass === "merchant")  startMoney = Math.max(startMoney, 40);
+
+  // Starting difficulty (take the lowest — easier is better for the player)
+  let startDiff = PLAYER_DIFFICULTY_START;
+  if (user?.upgStartDiff)      startDiff = Math.min(startDiff, 30);
+  if (runClass === "scholar")  startDiff = Math.min(startDiff, 35);
+  if (runClass === "mystic")   startDiff = Math.min(startDiff, 25);
+
+  // Skip cost (take the lowest)
+  let skipCost = SKIP_COST;
+  if (user?.upgReducedSkip)  skipCost = Math.min(skipCost, 20);
+  if (runClass === "rogue")  skipCost = Math.min(skipCost, 12);
+
+  // Money per correct (take the highest)
+  let moneyPC = MONEY_PER_CORRECT;
+  if (user?.upgMoneyBonus)    moneyPC = Math.max(moneyPC, 20);
+  if (runClass === "scholar") moneyPC = Math.max(moneyPC, 20);
+
+  // Streak for life (take the lowest — smaller streak threshold is better)
+  let streakFL = STREAK_FOR_LIFE;
+  if (user?.upgLuckyStreak)  streakFL = Math.min(streakFL, 2);
+  if (runClass === "mystic") streakFL = Math.min(streakFL, 2);
+
   const run = await prisma.run.create({
     data: {
       userId,
-      livesRemaining: LIVES_START + (user?.upgExtraLife ? 1 : 0),
-      lowestLives: LIVES_START + (user?.upgExtraLife ? 1 : 0),
-      runMoney: user?.upgHeadStart ? 30 : RUN_MONEY_START,
+      runClass,
+      livesRemaining: livesStart,
+      lowestLives: livesStart,
+      runMoney: startMoney,
       currentFloor: 1,
       mapData: mapData as object,
       currentNodeId: null,
-      playerDifficulty: user?.upgStartDiff ? 30 : PLAYER_DIFFICULTY_START,
-      skipCostRun: user?.upgReducedSkip ? 20 : SKIP_COST,
-      moneyPerCorrectRun: user?.upgMoneyBonus ? 20 : MONEY_PER_CORRECT,
-      streakForLifeRun: user?.upgLuckyStreak ? 2 : STREAK_FOR_LIFE,
+      playerDifficulty: startDiff,
+      skipCostRun: skipCost,
+      moneyPerCorrectRun: moneyPC,
+      streakForLifeRun: streakFL,
       diffStepRun: user?.upgResilience ? 3 : PLAYER_DIFFICULTY_STEP,
       shieldCount: user?.upgShield ? 1 : 0,
       secondWindAvailable: user?.upgSecondWind ?? false,
+      // Rogue: start with 2 free skips
+      freeMulligan: runClass === "rogue" ? 2 : 0,
+      // Mystic: start with 50/50 active
+      hasFiftyFifty: runClass === "mystic",
+      // Berserker: all money doubled via multiplier; wrong answers cost 2 lives
+      moneyMultiplier: runClass === "berserker" ? 2.0 : 1.0,
+      livesPerWrongAnswer: runClass === "berserker" ? 2 : 1,
     },
   });
 
@@ -537,6 +582,8 @@ export async function recordAnswer(
   const diffStep = run.diffStepRun ?? PLAYER_DIFFICULTY_STEP;
   const moneyPerCorrect = run.moneyPerCorrectRun ?? MONEY_PER_CORRECT;
   const maxLives = hasRelic(run, "relentless-spirit") || hasRelic(run, "cats-paw") ? 8 : 6; // cats-paw grant tracked separately
+  // Berserker class: wrong answers cost 2 lives; shield still fully absorbs one hit
+  const livesPerWrong = run.livesPerWrongAnswer ?? 1;
 
   // Combo: increment on correct, reset on wrong
   const newComboCount = correct ? (run.comboCount ?? 0) + 1 : 0;
@@ -562,9 +609,9 @@ export async function recordAnswer(
     playerDifficulty = Math.max(DIFFICULTY_SCORE_MIN, playerDifficulty - PLAYER_DIFFICULTY_STEP);
   } else {
     if (shieldCount > 0) {
-      shieldCount -= 1;
+      shieldCount -= 1; // shield absorbs all damage regardless of livesPerWrong
     } else {
-      livesRemaining -= 1;
+      livesRemaining -= livesPerWrong;
     }
     // Relic: Adrenaline Rush — wrong answers don't raise difficulty
     if (!hasRelic(run, "adrenaline-rush")) {
@@ -731,7 +778,8 @@ export async function recordSkip(
       freeMulligan: hasMulligan ? (run.freeMulligan ?? 0) - 1 : (run.freeMulligan ?? 0),
       hasFiftyFifty: false,
       hasHint: false,
-      comboCount: 0,  // skipping breaks the streak
+      // Rogue class: skipping doesn't break the combo streak
+      comboCount: run.runClass === "rogue" ? (run.comboCount ?? 0) : 0,
       ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
   });
@@ -779,7 +827,9 @@ export async function purchaseShopItem(
 
   const baseCost = SHOP_PRICES[item];
   // Relic: Bargain Hunter — shop items 20% cheaper
-  const cost = hasRelic(run, "bargain-hunter") ? Math.floor(baseCost * 0.8) : baseCost;
+  // Class: Merchant — also gets 20% off (same discount, doesn't stack doubly)
+  const hasDiscount = hasRelic(run, "bargain-hunter") || run.runClass === "merchant";
+  const cost = hasDiscount ? Math.floor(baseCost * 0.8) : baseCost;
   if (run.runMoney < cost) return { ok: false, error: "Not enough run money" };
 
   if (item === "fifty_fifty" && run.hasFiftyFifty) return { ok: false, error: "Already active" };
@@ -929,13 +979,15 @@ export async function enterNode(
 
   // Battle / elite / boss: set as active node, return first encounter.
   // Relic: Iron Shield — automatically grant +1 shield on entry.
+  // Class: Warrior — also grants +1 shield on every battle entry.
   const runRelics = (run.relics as string[]) ?? [];
+  const shieldOnEntry = runRelics.includes("iron-shield") || run.runClass === "warrior";
   await prisma.run.update({
     where: { id: runId },
     data: {
       currentNodeId: nodeId,
       currentFloor: floorNum,
-      ...(runRelics.includes("iron-shield") ? { shieldCount: { increment: 1 } } : {}),
+      ...(shieldOnEntry ? { shieldCount: { increment: 1 } } : {}),
     },
   });
 

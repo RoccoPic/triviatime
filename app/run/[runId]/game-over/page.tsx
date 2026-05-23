@@ -29,21 +29,21 @@ export default function GameOverPage() {
   }, [runId, status, router]);
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center p-8 text-zinc-100">
+    <main className="min-h-screen flex flex-col items-center justify-center p-8">
       <h1 className="text-3xl font-bold mb-2">Game Over</h1>
-      <p className="text-zinc-400 mb-8">Run ended. Half your run money was added to your collection.</p>
+      <p className="mb-8" style={{ color: "var(--text-muted)" }}>Run ended. Half your run money was added to your collection.</p>
       {run && (
         <div className="flex gap-6 mb-8 text-center">
           <div>
-            <p className="text-zinc-500 text-sm">Score</p>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Score</p>
             <p className="text-xl font-bold">{run.score}</p>
           </div>
           <div>
-            <p className="text-zinc-500 text-sm">Floors reached</p>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Floors reached</p>
             <p className="text-xl font-bold">{run.currentFloor}</p>
           </div>
           <div>
-            <p className="text-zinc-500 text-sm">Run money (50% → collection)</p>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Run money (50% → collection)</p>
             <p className="text-xl font-bold text-amber-400">{Math.floor(run.runMoney * 0.5)}</p>
           </div>
         </div>
@@ -55,7 +55,7 @@ export default function GameOverPage() {
         <Link href="/progress" className="px-6 py-3 rounded-lg border border-zinc-600 hover:border-zinc-500 font-medium">
           My progress
         </Link>
-        <Link href="/" className="px-6 py-3 text-zinc-500 hover:underline">Home</Link>
+        <Link href="/" className="px-6 py-3 hover:underline" style={{ color: "var(--text-muted)" }}>Home</Link>
       </div>
     </main>
   );

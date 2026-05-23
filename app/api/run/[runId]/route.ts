@@ -27,5 +27,6 @@ export async function GET(
     return NextResponse.json({ error: "Run or encounter not found" }, { status: 404 });
   }
 
+  // Map, event, or encounter — all serialise cleanly as JSON
   return NextResponse.json(data);
 }

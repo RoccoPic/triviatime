@@ -8,6 +8,7 @@ import { RunHUD } from "@/components/RunHUD";
 import { RunMap, TOKEN_MOVE_MS } from "@/components/RunMap";
 import type { RunState, EventDef, RelicDef } from "@/lib/run";
 import type { RunMapData } from "@/lib/map";
+import { getAchievementById } from "@/lib/achievement-defs";
 
 // ── Local types ───────────────────────────────────────────────────────────────
 
@@ -75,6 +76,9 @@ export default function RunEncounterPage() {
   const [lastResult, setLastResult] = useState<{ correct: boolean; shieldAbsorbed?: boolean } | null>(null);
   // Boss intro: dismissed per encounter (reset when screen changes away from encounter)
   const [bossIntroAcked, setBossIntroAcked] = useState(false);
+  // Achievement toasts — each auto-dismissed after 4 s
+  const [achToasts, setAchToasts] = useState<{ key: number; icon: string; name: string }[]>([]);
+  const achKeyRef = useRef(0);
 
   // Ref that always holds the most recent mapData so we can access it in
   // submitAnswer / payToSkip even though those API calls don't return mapData.
@@ -85,6 +89,18 @@ export default function RunEncounterPage() {
 
   // Node the player just clicked — drives the dragon token animation before screen change.
   const [enteringNodeId, setEnteringNodeId] = useState<string | null>(null);
+
+  // ── Achievement toasts ──────────────────────────────────────────────────────
+  function showAchievements(ids: string[] | undefined) {
+    if (!ids || ids.length === 0) return;
+    ids.forEach((id) => {
+      const def = getAchievementById(id);
+      if (!def) return;
+      const key = ++achKeyRef.current;
+      setAchToasts((prev) => [...prev, { key, icon: def.icon, name: def.name }]);
+      setTimeout(() => setAchToasts((prev) => prev.filter((t) => t.key !== key)), 4000);
+    });
+  }
 
   // ── Initial load ────────────────────────────────────────────────────────────
   const fetchState = useCallback(async () => {
@@ -249,6 +265,7 @@ export default function RunEncounterPage() {
       });
       const data = await res.json();
       if (!res.ok) return;
+      showAchievements(data.newAchievements);
       mapDataRef.current = data.mapData;
       setScreen({ id: "map", run: data.run, mapData: data.mapData, availableNodeIds: data.availableNodeIds });
     } finally {
@@ -266,6 +283,8 @@ export default function RunEncounterPage() {
         body: JSON.stringify({ runId }),
       });
       if (!res.ok) return;
+      const cashData = await res.json();
+      showAchievements(cashData.newAchievements);
       router.push(`/run/${runId}/game-over`);
     } finally {
       setBusy(false);
@@ -285,6 +304,7 @@ export default function RunEncounterPage() {
       });
       const data = await res.json();
       if (!res.ok) return;
+      showAchievements(data.newAchievements);
       const updatedRun = data.run ?? screen.run;
       setScreen({ id: "floor_clear", run: updatedRun, mapData, floorCategory });
     } finally {
@@ -313,10 +333,12 @@ export default function RunEncounterPage() {
       const result = await res.json();
 
       if (result.next === "game_over" || result.next === "run_complete") {
+        showAchievements(result.newAchievements);
         router.push(`/run/${runId}/game-over`);
         return;
       }
 
+      showAchievements(result.newAchievements);
       const shieldAbsorbed = !result.correct && (data.run.shieldCount ?? 0) > 0;
       setLastResult({ correct: result.correct, shieldAbsorbed });
 
@@ -353,7 +375,7 @@ export default function RunEncounterPage() {
         body: JSON.stringify({ runId: data.run.id, questionId: data.question.id }),
       });
       const result = await res.json();
-      if (result.next === "run_complete") { router.push(`/run/${runId}/game-over`); return; }
+      if (result.next === "run_complete") { showAchievements(result.newAchievements); router.push(`/run/${runId}/game-over`); return; }
       if (result.next === "floor_clear") {
         const newRun = {
           ...data.run,
@@ -401,17 +423,41 @@ export default function RunEncounterPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
+  /** Achievement toasts overlay — rendered on top of every screen */
+  const AchievementToasts = achToasts.length > 0 ? (
+    <div className="fixed bottom-6 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+      {achToasts.map((t) => (
+        <div
+          key={t.key}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-amber-500/40
+                     bg-zinc-900/95 shadow-lg text-sm font-medium animate-fade-in-up"
+        >
+          <span className="text-xl leading-none">{t.icon}</span>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-400 leading-none mb-0.5">
+              Achievement unlocked
+            </p>
+            <p>{t.name}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : null;
+
   if (screen.id === "loading") {
     return <main className="min-h-screen flex items-center justify-center">Loading run…</main>;
   }
 
   if (screen.id === "game_over") {
     return (
-      <main className="min-h-screen flex flex-col items-center justify-center p-8">
-        <h1 className="text-2xl font-bold mb-4">Game Over</h1>
-        <Link href={`/run/${runId}/game-over`} className="text-amber-500 hover:underline">View run summary</Link>
-        <Link href="/run" className="mt-4 hover:underline" style={{ color: "var(--text-muted)" }}>Start a new run</Link>
-      </main>
+      <>
+        {AchievementToasts}
+        <main className="min-h-screen flex flex-col items-center justify-center p-8">
+          <h1 className="text-2xl font-bold mb-4">Game Over</h1>
+          <Link href={`/run/${runId}/game-over`} className="text-amber-500 hover:underline">View run summary</Link>
+          <Link href="/run" className="mt-4 hover:underline" style={{ color: "var(--text-muted)" }}>Start a new run</Link>
+        </main>
+      </>
     );
   }
 
@@ -423,6 +469,7 @@ export default function RunEncounterPage() {
 
     return (
       <main className="min-h-screen p-4 md:p-8">
+        {AchievementToasts}
         <div className="max-w-3xl mx-auto flex flex-col gap-4">
           {/* Stats bar */}
           <div className="flex items-center justify-between flex-wrap gap-3 px-1">
@@ -611,6 +658,7 @@ export default function RunEncounterPage() {
     const diff = difficultyInfo(run.playerDifficulty);
     return (
       <main className="min-h-screen p-4 md:p-8">
+        {AchievementToasts}
         <div className="max-w-2xl mx-auto flex flex-col gap-4">
           <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-center text-zinc-100">
             <p className="text-amber-400 text-sm font-medium uppercase tracking-widest mb-1">Node cleared</p>
@@ -653,6 +701,7 @@ export default function RunEncounterPage() {
     const { run, choices } = screen;
     return (
       <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+        {AchievementToasts}
         <div className="max-w-xl w-full mx-auto flex flex-col gap-6">
           {/* Header */}
           <div className="text-center">
@@ -714,6 +763,7 @@ export default function RunEncounterPage() {
     const { run } = screen;
     return (
       <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+        {AchievementToasts}
         <div className="max-w-md w-full mx-auto flex flex-col gap-6">
           {/* Trophy card */}
           <div className="rounded-xl border border-amber-500/60 bg-zinc-900/60 p-8 text-center text-zinc-100">
@@ -819,6 +869,7 @@ export default function RunEncounterPage() {
 
   return (
     <main className="min-h-screen p-4 md:p-8">
+      {AchievementToasts}
       <div className="max-w-2xl mx-auto flex flex-col gap-6">
         <RunHUD
           lives={run.livesRemaining}

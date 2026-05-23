@@ -38,6 +38,13 @@ export default async function HomePage() {
             My progress
           </Link>
           <Link
+            href="/achievements"
+            className="px-6 py-3 rounded-lg font-medium transition"
+            style={{ border: "1px solid var(--text-muted)", color: "var(--text-page)" }}
+          >
+            Achievements
+          </Link>
+          <Link
             href="/settings"
             className="px-6 py-3 rounded-lg font-medium transition"
             style={{ border: "1px solid var(--text-muted)", color: "var(--text-page)" }}

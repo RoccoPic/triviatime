@@ -8,23 +8,24 @@ datasource db {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  email           String?   @unique
+  id              String             @id @default(cuid())
+  email           String?            @unique
   name            String?
   emailVerified   DateTime?
   image           String?
   passwordHash    String?
-  collectionMoney Int       @default(0)
-  upgExtraLife    Boolean   @default(false)
-  upgHeadStart    Boolean   @default(false)
-  upgLuckyStreak  Boolean   @default(false)
-  upgMoneyBonus   Boolean   @default(false)
-  upgReducedSkip  Boolean   @default(false)
-  upgResilience   Boolean   @default(false)
-  upgSecondWind   Boolean   @default(false)
-  upgShield       Boolean   @default(false)
-  upgStartDiff    Boolean   @default(false)
+  collectionMoney Int                @default(0)
+  upgExtraLife    Boolean            @default(false)
+  upgHeadStart    Boolean            @default(false)
+  upgLuckyStreak  Boolean            @default(false)
+  upgMoneyBonus   Boolean            @default(false)
+  upgReducedSkip  Boolean            @default(false)
+  upgResilience   Boolean            @default(false)
+  upgSecondWind   Boolean            @default(false)
+  upgShield       Boolean            @default(false)
+  upgStartDiff    Boolean            @default(false)
   accounts        Account[]
+  achievements    UserAchievement[]
   runs            Run[]
   sessions        Session[]
 }
@@ -123,9 +124,22 @@ model Run {
   pendingRelicNodeId  String?
   // Combo: consecutive correct answers — resets on wrong answer or skip
   comboCount          Int       @default(0)
+  // Lowest lives reached during the run — used for comeback-kid / survivor achievements
+  lowestLives         Int       @default(3)
   answers             Answer[]
   user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+}
+
+model UserAchievement {
+  id            String   @id @default(cuid())
+  userId        String
+  achievementId String
+  earnedAt      DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
   @@index([userId])
 }
 

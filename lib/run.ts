@@ -10,6 +10,7 @@ import {
 } from "@/lib/events";
 import { getBossForCategory } from "@/lib/bosses";
 import { pickRandomRelics, pickRelicsDeterministic, getRelicById, type RelicDef } from "@/lib/relics";
+import { checkAndGrantAchievements } from "@/lib/achievements";
 import {
   LIVES_START,
   RUN_MONEY_START,
@@ -332,6 +333,7 @@ export async function startRun(userId: string, enabledSlugs?: string[] | null): 
     data: {
       userId,
       livesRemaining: LIVES_START + (user?.upgExtraLife ? 1 : 0),
+      lowestLives: LIVES_START + (user?.upgExtraLife ? 1 : 0),
       runMoney: user?.upgHeadStart ? 30 : RUN_MONEY_START,
       currentFloor: 1,
       mapData: mapData as object,
@@ -503,7 +505,7 @@ export async function recordAnswer(
   userId: string,
   questionId: string,
   selectedIndex: number
-): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[] }> {
+): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[]; newAchievements?: string[] }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { correct: false, livesRemaining: 0, runMoney: 0, next: "game_over" };
 
@@ -583,6 +585,9 @@ export async function recordAnswer(
   // Relic: Hardened Mind — difficulty cap at 70
   if (hasRelic(run, "hardened-mind")) playerDifficulty = Math.min(playerDifficulty, 70);
 
+  // Track the lowest lives reached this run (used by survivor / comeback-kid achievements)
+  const newLowestLives = Math.min(livesRemaining, run.lowestLives ?? run.livesRemaining);
+
   await prisma.answer.create({
     data: { runId, questionId, correct, skipped: false, floorIndex: activeFloor, encounterIndex },
   });
@@ -601,7 +606,16 @@ export async function recordAnswer(
 
   if (livesRemaining <= 0) {
     await endRun(runId, userId);
-    return { correct, livesRemaining: 0, runMoney, next: "game_over" };
+    const gameOverAchs = await checkAndGrantAchievements(run.userId, {
+      event: "run_end",
+      score: run.score + (correct ? 1 : 0),
+      livesRemaining: 0,
+      lowestLives: Math.min(0, newLowestLives),
+      won: false,
+      wrongAnswers: [...run.answers, { correct, skipped: false }].filter((a) => !a.correct && !a.skipped).length,
+      skippedAnswers: run.answers.filter((a) => a.skipped).length,
+    });
+    return { correct, livesRemaining: 0, runMoney, next: "game_over", newAchievements: gameOverAchs };
   }
 
   // Determine if this is the last question of the node (for floor_clear routing + relic offers)
@@ -624,8 +638,19 @@ export async function recordAnswer(
       hasHint: false,
       secondWindAvailable,
       comboCount: newComboCount,
+      lowestLives: newLowestLives,
       ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
+  });
+
+  // ── Achievement checks ──────────────────────────────────────────────────────
+  const newScore = run.score + (correct ? 1 : 0);
+  const answerAchs = await checkAndGrantAchievements(run.userId, {
+    event: "answer",
+    score: newScore,
+    comboCount: newComboCount,
+    runMoney,
+    livesRemaining,
   });
 
   if (isFloorClear) {
@@ -633,15 +658,25 @@ export async function recordAnswer(
       const relicChoices = shouldOfferRelic
         ? pickRandomRelics(3, (run.relics as string[]) ?? [])
         : undefined;
-      return { correct, livesRemaining, runMoney, next: "floor_clear", relicChoices };
+      return { correct, livesRemaining, runMoney, next: "floor_clear", relicChoices, newAchievements: answerAchs };
     }
     // Legacy linear
     const order = (run.floorCategoryOrder as string[]) ?? [];
     if (run.currentFloor >= order.length) {
       await completeRun(runId, userId);
-      return { correct, livesRemaining, runMoney, next: "run_complete" };
+      const allAnswers = [...run.answers, { correct, skipped: false }];
+      const endAchs = await checkAndGrantAchievements(run.userId, {
+        event: "run_end",
+        score: newScore,
+        livesRemaining,
+        lowestLives: newLowestLives,
+        won: true,
+        wrongAnswers: allAnswers.filter((a) => !a.correct && !a.skipped).length,
+        skippedAnswers: allAnswers.filter((a) => a.skipped).length,
+      });
+      return { correct, livesRemaining, runMoney, next: "run_complete", newAchievements: [...answerAchs, ...endAchs] };
     }
-    return { correct, livesRemaining, runMoney, next: "floor_clear" };
+    return { correct, livesRemaining, runMoney, next: "floor_clear", newAchievements: answerAchs };
   }
 
   const nextEncounter = await getRunEncounter(runId, userId);
@@ -651,6 +686,7 @@ export async function recordAnswer(
     runMoney,
     next: "encounter",
     run: nextEncounter && nextEncounter !== "game_over" && "question" in nextEncounter ? nextEncounter : undefined,
+    newAchievements: answerAchs,
   };
 }
 
@@ -658,7 +694,7 @@ export async function recordSkip(
   runId: string,
   userId: string,
   questionId: string
-): Promise<{ ok: boolean; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[] }> {
+): Promise<{ ok: boolean; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[]; newAchievements?: string[] }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { ok: false, next: "game_over" };
 
@@ -710,7 +746,17 @@ export async function recordSkip(
     const catOrder = (run.floorCategoryOrder as string[]) ?? [];
     if (run.currentFloor >= catOrder.length) {
       await completeRun(runId, userId);
-      return { ok: true, next: "run_complete" };
+      // Legacy run complete via skip — check run_end achievements
+      const endAchs = await checkAndGrantAchievements(run.userId, {
+        event: "run_end",
+        score: run.score,
+        livesRemaining: run.livesRemaining,
+        lowestLives: run.lowestLives ?? run.livesRemaining,
+        won: true,
+        wrongAnswers: [...run.answers, { correct: false, skipped: true }].filter((a) => !a.correct && !a.skipped).length,
+        skippedAnswers: run.answers.filter((a) => a.skipped).length + 1,
+      });
+      return { ok: true, next: "run_complete", newAchievements: endAchs };
     }
     return { ok: true, next: "floor_clear" };
   }
@@ -1077,7 +1123,7 @@ export async function endRun(runId: string, userId: string): Promise<void> {
 }
 
 /** Advance to the next wave: bigger map, harder starting difficulty, keep all run stats. */
-export async function advanceWave(runId: string, userId: string): Promise<RunMapState | null> {
+export async function advanceWave(runId: string, userId: string): Promise<(RunMapState & { newAchievements: string[] }) | null> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId } });
   if (!run || run.endedAt) return null;
 
@@ -1104,7 +1150,8 @@ export async function advanceWave(runId: string, userId: string): Promise<RunMap
   });
 
   const available = getAvailableNodeIds(mapData);
-  return { state: "map", run: toRunState(updated), mapData, availableNodeIds: available };
+  const waveAchs = await checkAndGrantAchievements(run.userId, { event: "wave_advance", wave: newWave });
+  return { state: "map", run: toRunState(updated), mapData, availableNodeIds: available, newAchievements: waveAchs };
 }
 
 /** Claim a relic from the pending offer after clearing a boss or elite node. */
@@ -1112,7 +1159,7 @@ export async function pickRelic(
   runId: string,
   userId: string,
   relicId: string,
-): Promise<{ ok: boolean; error?: string; run?: RunState }> {
+): Promise<{ ok: boolean; error?: string; run?: RunState; newAchievements?: string[] }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId } });
   if (!run || run.endedAt) return { ok: false, error: "Run not found" };
 
@@ -1141,13 +1188,17 @@ export async function pickRelic(
     },
   });
 
-  return { ok: true, run: toRunState(updated) };
+  const relicAchs = await checkAndGrantAchievements(run.userId, {
+    event: "relic_pick",
+    relicsCount: newRelics.length,
+  });
+  return { ok: true, run: toRunState(updated), newAchievements: relicAchs };
 }
 
 /** Cash out at end of wave: award 100% of run money to collection, end the run. */
-export async function cashOut(runId: string, userId: string): Promise<{ ok: boolean; collectionMoneyEarned: number }> {
-  const run = await prisma.run.findFirst({ where: { id: runId, userId } });
-  if (!run || run.endedAt) return { ok: false, collectionMoneyEarned: 0 };
+export async function cashOut(runId: string, userId: string): Promise<{ ok: boolean; collectionMoneyEarned: number; newAchievements: string[] }> {
+  const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
+  if (!run || run.endedAt) return { ok: false, collectionMoneyEarned: 0, newAchievements: [] };
 
   const toAdd = run.runMoney; // 100% conversion — the reward for completing a wave
   await prisma.run.update({ where: { id: runId }, data: { endedAt: new Date(), won: true } });
@@ -1155,5 +1206,17 @@ export async function cashOut(runId: string, userId: string): Promise<{ ok: bool
     await prisma.user.update({ where: { id: userId }, data: { collectionMoney: { increment: toAdd } } });
   }
 
-  return { ok: true, collectionMoneyEarned: toAdd };
+  const wrongAnswers  = run.answers.filter((a) => !a.correct && !a.skipped).length;
+  const skippedAnswers = run.answers.filter((a) => a.skipped).length;
+  const newAchievements = await checkAndGrantAchievements(run.userId, {
+    event: "run_end",
+    score: run.score,
+    livesRemaining: run.livesRemaining,
+    lowestLives: run.lowestLives ?? run.livesRemaining,
+    won: true,
+    wrongAnswers,
+    skippedAnswers,
+  });
+
+  return { ok: true, collectionMoneyEarned: toAdd, newAchievements };
 }

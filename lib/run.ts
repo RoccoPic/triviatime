@@ -104,6 +104,7 @@ export type RunState = {
   secondWindAvailable: boolean;
   floorCategoryOrder: string[];
   relics: string[];
+  comboCount: number;
 };
 
 export type RunWithEncounter = {
@@ -193,7 +194,15 @@ function toRunState(run: any): RunState {
     secondWindAvailable: run.secondWindAvailable ?? false,
     floorCategoryOrder: (run.floorCategoryOrder as string[]) ?? [],
     relics: (run.relics as string[]) ?? [],
+    comboCount: run.comboCount ?? 0,
   };
+}
+
+/** Money multiplier from current combo streak. */
+function comboMultiplier(combo: number): number {
+  if (combo >= 4) return 2.0;
+  if (combo >= 2) return 1.5;
+  return 1.0;
 }
 
 /** Returns question IDs answered in the last `numRuns` completed runs for a user.
@@ -499,6 +508,9 @@ export async function recordAnswer(
   const moneyPerCorrect = run.moneyPerCorrectRun ?? MONEY_PER_CORRECT;
   const maxLives = hasRelic(run, "relentless-spirit") || hasRelic(run, "cats-paw") ? 8 : 6; // cats-paw grant tracked separately
 
+  // Combo: increment on correct, reset on wrong
+  const newComboCount = correct ? (run.comboCount ?? 0) + 1 : 0;
+
   if (correct) {
     let earned = Math.round(moneyPerCorrect * moneyMultiplier);
     // Relic: Double-Edged Sword — 2× all money
@@ -509,6 +521,9 @@ export async function recordAnswer(
     if (hasRelic(run, "lucky-coin") && Math.random() < 0.25) earned *= 2;
     // Relic: Scholar's Tome — +$8 flat
     if (hasRelic(run, "scholars-tome")) earned += 8;
+    // Combo multiplier — applied last, stacks on top of all other bonuses
+    const cMult = comboMultiplier(newComboCount);
+    if (cMult > 1) earned = Math.floor(earned * cMult);
     runMoney += earned;
 
     const recentAnswers = run.answers.slice(-(streakThreshold - 1));
@@ -580,6 +595,7 @@ export async function recordAnswer(
       hasFiftyFifty: false,
       hasHint: false,
       secondWindAvailable,
+      comboCount: newComboCount,
       ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
   });
@@ -651,6 +667,7 @@ export async function recordSkip(
       freeMulligan: hasMulligan ? (run.freeMulligan ?? 0) - 1 : (run.freeMulligan ?? 0),
       hasFiftyFifty: false,
       hasHint: false,
+      comboCount: 0,  // skipping breaks the streak
       ...(shouldOfferRelic ? { pendingRelicNodeId: run.currentNodeId } : {}),
     },
   });

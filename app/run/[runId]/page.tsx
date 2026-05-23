@@ -821,6 +821,7 @@ export default function RunEncounterPage() {
           hasHint={run.hasHint}
           freeMulligan={run.freeMulligan}
           relics={run.relics}
+          comboCount={run.comboCount}
         />
 
         <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-zinc-100">

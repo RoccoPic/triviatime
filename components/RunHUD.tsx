@@ -21,6 +21,7 @@ export function RunHUD({
   hasHint = false,
   freeMulligan = 0,
   relics = [],
+  comboCount = 0,
 }: {
   lives: number;
   runMoney: number;
@@ -36,10 +37,14 @@ export function RunHUD({
   hasHint?: boolean;
   freeMulligan?: number;
   relics?: string[];
+  comboCount?: number;
 }) {
   const diff = difficultyLabel(playerDifficulty);
 
+  const comboMult = comboCount >= 4 ? "2×" : "1.5×";
+
   const effects: { label: string; color: string }[] = [];
+  if (comboCount >= 2)      effects.push({ label: `🔥 ${comboCount} Streak · ${comboMult} Money`, color: "text-orange-400" });
   if (shieldCount > 0)      effects.push({ label: `Shield ×${shieldCount}`,  color: "text-blue-400" });
   if (freezeCount > 0)      effects.push({ label: `Freeze ×${freezeCount}`,  color: "text-cyan-400" });
   if (moneyMultiplier > 1)  effects.push({ label: "2× Money",                color: "text-amber-400" });

@@ -48,7 +48,7 @@ function loadCheckpoint(): Set<string> {
 }
 
 function saveCheckpoint(done: Set<string>) {
-  fs.writeFileSync(CHECKPOINT_PATH, JSON.stringify([...done]), "utf8");
+  fs.writeFileSync(CHECKPOINT_PATH, JSON.stringify(Array.from(done)), "utf8");
 }
 
 // ── Wikipedia helpers ─────────────────────────────────────────────────────────

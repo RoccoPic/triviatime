@@ -121,6 +121,8 @@ model Run {
   relics              Json      @default("[]")
   // Set to currentNodeId when a boss/elite clear earns a relic pick; cleared after picking
   pendingRelicNodeId  String?
+  // Combo: consecutive correct answers — resets on wrong answer or skip
+  comboCount          Int       @default(0)
   answers             Answer[]
   user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 

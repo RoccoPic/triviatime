@@ -78,6 +78,9 @@ model Question {
   options         Json
   correctIndex    Int
   difficultyScore Int          @default(50)
+  citation        String?
+  verified        Boolean      @default(false)
+  confidence      Float?
   answers         Answer[]
   category        Category     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   subcategory     Subcategory? @relation(fields: [subcategoryId], references: [id])
@@ -85,6 +88,7 @@ model Question {
   @@index([categoryId])
   @@index([categoryId, difficultyScore])
   @@index([subcategoryId])
+  @@index([verified])
 }
 
 model Run {

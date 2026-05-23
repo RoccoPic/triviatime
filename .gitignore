@@ -27,6 +27,9 @@ yarn-error.log*
 .env*.local
 .env
 
+# private docs
+docs/API_GUIDE.md
+
 # vercel
 .vercel
 

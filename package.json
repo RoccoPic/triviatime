@@ -7,11 +7,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "gen": "tsx scripts/generate-questions.ts",
+    "facts4u": "tsx scripts/facts4u.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
     "@prisma/client": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "next": "14.2.18",

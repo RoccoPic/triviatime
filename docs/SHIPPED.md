@@ -102,3 +102,62 @@ The final column of every generated map is always a boss node (☠). Each catego
 | 💪 Relentless Spirit | Gain +1 life on each wave progression |
 
 Relics are displayed as icon tooltips in the RunHUD during every battle.
+
+---
+
+## 13. Combo Multiplier
+**Shipped:** May 23, 2026
+
+Consecutive correct answers build a streak multiplier. 2–3 in a row earns 1.5× money; 4+ earns 2×. Wrong answers or skips reset the counter to zero. The combo is tracked on the Run model (`comboCount`) and displayed as an 🔥 chip in the RunHUD. Multiplier is applied after all relic effects and stacks cleanly with Double-Edged Sword, Golden Fleece, Lucky Coin, and Scholar's Tome.
+
+---
+
+## 14. Save State / Run Resume
+**Shipped:** May 23, 2026
+
+Players can close the tab mid-run and return to exactly where they left off. `GET /api/run/active` returns any in-progress run for the lobby to surface. The `getRunEncounter` function now returns `floor_clear`, `relic_pick`, and `wave_complete` states (instead of null) when a floor is already finished, so the frontend restores the correct screen on reload. Relic choices are deterministic — seeded from `runId + pendingRelicNodeId` via `pickRelicsDeterministic` — so refreshing can't reroll the offer. The run lobby shows an amber "Run in progress" card with stats and a "Continue run →" button.
+
+---
+
+## 15. Achievements
+**Shipped:** May 23, 2026
+
+16 one-time milestone achievements across 7 categories (Bronze / Silver / Gold tiers) with a gallery page at `/achievements`. Achievements are checked server-side at every answer, wave advance, relic pick, and run end — fully idempotent. A `lowestLives` field on Run tracks whether the player ever dropped to 1 life (used for Comeback Kid and Survivor). Mid-run unlock toasts appear bottom-right and auto-dismiss after 4 seconds.
+
+| Achievement | Unlock condition |
+|---|---|
+| ⚔️ Into the Fray | Complete any run |
+| 🏆 Victorious | Win your first run |
+| 🧠 Curious Mind | 10 correct in one run |
+| 📖 Scholar | 25 correct in one run |
+| 🎓 Mastermind | 50 correct in one run |
+| 🔥 On Fire | 5-answer streak |
+| ⚡ Unstoppable | 10-answer streak |
+| 💰 Loaded | $200 run money at once |
+| 🏺 Relic Hunter | 3 relics in one run |
+| 🔮 Relic Hoarder | 5 relics in one run |
+| 🌊 Wave Rider | Reach Wave 2 |
+| ⛈️ Storm Chaser | Reach Wave 3 |
+| 💀 Barely Made It | Win with exactly 1 life |
+| 💪 Comeback Kid | Win after dropping to 1 life |
+| ✨ Flawless | Win with no wrong answers |
+| 🎯 No Shortcuts | Win without skipping |
+
+---
+
+## 16. Class System
+**Shipped:** May 23, 2026
+
+7 classes with distinct starting bonuses and passive mechanics. Regular is always available; the other 6 are locked behind specific achievements, giving players long-term progression goals beyond collection money.
+
+| Class | Unlock | Passives |
+|---|---|---|
+| 🧑 Regular | Always | No bonuses |
+| 📚 Scholar | Victorious | Start diff 35, earn $20/correct |
+| ⚔️ Warrior | Scholar (25 correct) | +1 start life, +1 shield per battle entry |
+| 💰 Merchant | Loaded ($200 in a run) | Start $40, shop 20% off |
+| 🗡️ Rogue | On Fire (5-streak) | Skip $12, 2 free skips, skip keeps combo |
+| 🔮 Mystic | Flawless win | Start diff 25, begin with 50/50, life at 2-streak |
+| 🔥 Berserker | Storm Chaser (Wave 3) | 5 start lives, 2× money, wrong costs 2 lives |
+
+Class passives are enforced throughout `lib/run.ts`: Warrior's shield fires in `enterNode`, Merchant's discount in `purchaseShopItem`, Rogue's combo preservation in `recordSkip`, Berserker's double life loss via a `livesPerWrongAnswer` field on Run. When a qualifying achievement is earned, the corresponding class is automatically unlocked as a side effect. Class selection UI lives on the run lobby page with color-coded cards and a passives detail panel.

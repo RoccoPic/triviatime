@@ -22,13 +22,8 @@ Before each run, offer 3 randomly drawn modifiers — player picks one. Mix of p
 - [ ] Display active modifier in HUD as a small pill/chip
 - [ ] Modifier pick screen shown after class selection, before run starts
 
-### Stats & Run History
-Players want to see how they're improving. The data already exists — this is mostly aggregation and UI. *(QoL — standard in every roguelike)*
-- [ ] Run history list: date, class, wave reached, score, win/lose
-- [ ] Career stats: total runs, win rate, average score, longest streak, most money in one run
-- [ ] Per-category accuracy heatmap (correct/total answered per category)
-- [ ] Best run per class
-- [ ] Link from home page and progress page
+### Stats & Run History ✅ SHIPPED
+*(See SHIPPED.md #17)*
 
 ---
 

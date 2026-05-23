@@ -161,3 +161,24 @@ Players can close the tab mid-run and return to exactly where they left off. `GE
 | 🔥 Berserker | Storm Chaser (Wave 3) | 5 start lives, 2× money, wrong costs 2 lives |
 
 Class passives are enforced throughout `lib/run.ts`: Warrior's shield fires in `enterNode`, Merchant's discount in `purchaseShopItem`, Rogue's combo preservation in `recordSkip`, Berserker's double life loss via a `livesPerWrongAnswer` field on Run. When a qualifying achievement is earned, the corresponding class is automatically unlocked as a side effect. Class selection UI lives on the run lobby page with color-coded cards and a passives detail panel.
+
+---
+
+## 17. Stats & Run History
+**Shipped:** May 23, 2026
+
+Full redesign of `/progress` and the run game-over screen.
+
+**Progress page** (`/app/progress`):
+- **Career stats row**: Total Runs, Wins, Win Rate (color-coded green/yellow/red), Best Score, Best Wave, Most $ in a run, Best Class (most wins).
+- **Run History tab**: Each run shows class icon + name, win/loss badge, score, wave, ✓ correct / ✗ wrong / ↷ skipped counts, relative timestamp, run money, and all relic icons in a mini tray.
+- **Category Stats tab**: Horizontal fill bars per category sorted by total answers, color-coded emerald (90%+) → green → yellow → red (<50%). Accuracy legend included.
+
+**Game-over / Run Summary page** (`/run/[runId]/game-over`):
+- Win/Loss/Ended outcome header with class name, wave, and run duration.
+- Stat grid: Score, Floors, Lives left.
+- Answer breakdown: Correct, Wrong, Skipped, Accuracy %.
+- Collection money earned callout (+$X).
+- Relic gallery showing every relic earned with icon + name.
+
+**API** (`/api/progress`): now returns enriched `career` object, per-run `correct/wrong/skipped` counts, `relics`, `wave`, `won`, `runClass`, and full `name` for categories. `/api/run/[runId]` game-over branch now joins answer counts and full run metadata.

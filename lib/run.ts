@@ -550,7 +550,7 @@ export async function recordAnswer(
   userId: string,
   questionId: string,
   selectedIndex: number
-): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[]; newAchievements?: string[] }> {
+): Promise<{ correct: boolean; livesRemaining: number; runMoney: number; next: "encounter" | "floor_clear" | "run_complete" | "game_over"; run?: RunWithEncounter; relicChoices?: RelicDef[]; newAchievements?: string[]; correctIndex?: number; explanation?: string | null }> {
   const run = await prisma.run.findFirst({ where: { id: runId, userId }, include: { answers: true } });
   if (!run || run.endedAt) return { correct: false, livesRemaining: 0, runMoney: 0, next: "game_over" };
 
@@ -568,6 +568,9 @@ export async function recordAnswer(
   }
 
   const correct = question.correctIndex === selectedIndex;
+  // Included in every response so the UI can reveal the correct answer and show an explanation
+  const answerInfo = { correctIndex: question.correctIndex, explanation: question.citation ?? null };
+
   const answersThisFloor = run.answers.filter((a) => a.floorIndex === activeFloor);
   const encounterIndex = answersThisFloor.length;
 
@@ -662,7 +665,7 @@ export async function recordAnswer(
       wrongAnswers: [...run.answers, { correct, skipped: false }].filter((a) => !a.correct && !a.skipped).length,
       skippedAnswers: run.answers.filter((a) => a.skipped).length,
     });
-    return { correct, livesRemaining: 0, runMoney, next: "game_over", newAchievements: gameOverAchs };
+    return { correct, livesRemaining: 0, runMoney, next: "game_over", newAchievements: gameOverAchs, ...answerInfo };
   }
 
   // Determine if this is the last question of the node (for floor_clear routing + relic offers)
@@ -705,7 +708,7 @@ export async function recordAnswer(
       const relicChoices = shouldOfferRelic
         ? pickRandomRelics(3, (run.relics as string[]) ?? [])
         : undefined;
-      return { correct, livesRemaining, runMoney, next: "floor_clear", relicChoices, newAchievements: answerAchs };
+      return { correct, livesRemaining, runMoney, next: "floor_clear", relicChoices, newAchievements: answerAchs, ...answerInfo };
     }
     // Legacy linear
     const order = (run.floorCategoryOrder as string[]) ?? [];
@@ -721,9 +724,9 @@ export async function recordAnswer(
         wrongAnswers: allAnswers.filter((a) => !a.correct && !a.skipped).length,
         skippedAnswers: allAnswers.filter((a) => a.skipped).length,
       });
-      return { correct, livesRemaining, runMoney, next: "run_complete", newAchievements: [...answerAchs, ...endAchs] };
+      return { correct, livesRemaining, runMoney, next: "run_complete", newAchievements: [...answerAchs, ...endAchs], ...answerInfo };
     }
-    return { correct, livesRemaining, runMoney, next: "floor_clear", newAchievements: answerAchs };
+    return { correct, livesRemaining, runMoney, next: "floor_clear", newAchievements: answerAchs, ...answerInfo };
   }
 
   const nextEncounter = await getRunEncounter(runId, userId);
@@ -734,6 +737,7 @@ export async function recordAnswer(
     next: "encounter",
     run: nextEncounter && nextEncounter !== "game_over" && "question" in nextEncounter ? nextEncounter : undefined,
     newAchievements: answerAchs,
+    ...answerInfo,
   };
 }
 

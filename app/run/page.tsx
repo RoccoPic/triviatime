@@ -125,7 +125,7 @@ export default function RunPage() {
             </p>
             <div className="flex gap-6 text-sm mb-3">
               <span><span className="text-red-400 font-bold">{activeRun.livesRemaining}</span> <span style={{ color: "var(--text-muted)" }}>lives</span></span>
-              <span><span className="text-amber-400 font-bold">${activeRun.runMoney}</span> <span style={{ color: "var(--text-muted)" }}>run $</span></span>
+              <span><span className="text-amber-400 font-bold">${activeRun.runMoney}</span> <span style={{ color: "var(--text-muted)" }}>run money</span></span>
               <span><span className="font-bold">{activeRun.score}</span> <span style={{ color: "var(--text-muted)" }}>score</span></span>
               {activeRun.wave > 1 && (
                 <span><span className="text-blue-400 font-bold">Wave {activeRun.wave}</span></span>

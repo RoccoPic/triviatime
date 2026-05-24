@@ -182,3 +182,23 @@ Full redesign of `/progress` and the run game-over screen.
 - Relic gallery showing every relic earned with icon + name.
 
 **API** (`/api/progress`): now returns enriched `career` object, per-run `correct/wrong/skipped` counts, `relics`, `wave`, `won`, `runClass`, and full `name` for categories. `/api/run/[runId]` game-over branch now joins answer counts and full run metadata.
+
+---
+
+## 18. Answer Explanations
+**Shipped:** May 23, 2026
+
+After every answer the game now shows colour-coded feedback and an optional explanation sentence pulled from the question's `citation` field.
+
+**Wrong answers** — always:
+- The chosen option turns red; the correct answer turns green.
+- A red panel drops in below with "✗ Wrong — one life lost." (or "shield absorbed the hit.").
+- The citation is shown as a 💡 one-liner. If no citation exists, falls back to "No explanation available."
+- A **Got it →** button advances manually; skip bar is hidden during this window.
+
+**Correct answers** — opt-in via Settings → Gameplay → *Explain correct answers*:
+- Toggle stored in `localStorage` via `lib/explanation-settings.ts`.
+- When on + citation available: green panel with 💡 explanation + **Next →** button. Auto-advances after 4 s if not clicked; the timer is cancelled cleanly on click or screen change.
+- When off (default): brief 1.2 s green flash then auto-advances as before.
+
+`lib/run.ts` `recordAnswer` returns `correctIndex` and `explanation` (= `question.citation ?? null`) on every response path.

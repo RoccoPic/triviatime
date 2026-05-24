@@ -19,7 +19,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "runId and valid item required" }, { status: 400 });
   }
 
-  const result = await purchaseShopItem(runId, session.user.id, item as ShopItem);
-  if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
-  return NextResponse.json(result);
+  try {
+    const result = await purchaseShopItem(runId, session.user.id, item as ShopItem);
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
+    return NextResponse.json(result);
+  } catch (err) {
+    console.error("[shop] purchaseShopItem threw:", err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
 }

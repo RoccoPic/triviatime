@@ -4,11 +4,13 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import { RunHUD } from "@/components/RunHUD";
 import { RunMap, TOKEN_MOVE_MS } from "@/components/RunMap";
 import type { RunState, EventDef, RelicDef } from "@/lib/run";
 import type { RunMapData } from "@/lib/map";
 import { getAchievementById } from "@/lib/achievement-defs";
+import { getShowCorrectExplanation } from "@/lib/explanation-settings";
 
 // ── Local types ───────────────────────────────────────────────────────────────
 
@@ -55,10 +57,10 @@ const SHOP_ITEMS: ShopItemDef[] = [
   { id: "floor_peek",        name: "Node Peek",         price: 15,  desc: "Reveal the next node's category" },
 ];
 
-function difficultyInfo(d: number): { label: string; className: string } {
-  if (d <= 33) return { label: "Easy",   className: "text-green-400" };
-  if (d <= 66) return { label: "Medium", className: "text-yellow-400" };
-  return              { label: "Hard",   className: "text-red-400" };
+function difficultyInfo(d: number): { label: string; color: string } {
+  if (d <= 33) return { label: "Easy",   color: "#4ade80" };
+  if (d <= 66) return { label: "Medium", color: "#fbbf24" };
+  return              { label: "Hard",   color: "#f87171" };
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -85,6 +87,13 @@ export default function RunEncounterPage() {
   } | null>(null);
   // Stores the pending screen transition while the wrong-answer feedback is showing
   const pendingTransitionRef = useRef<(() => void) | null>(null);
+  // Auto-advance timer for correct-answer explanation (can be cancelled by "Next →" click)
+  const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Whether to show explanations on correct answers (read from localStorage on mount)
+  const [showCorrectExpl, setShowCorrectExpl] = useState(false);
+  // Synchronous guard for buyShopItem — useRef so it's set instantly (before React re-renders)
+  // preventing double-click races that slip past the `busy` state check.
+  const shopBusyRef = useRef(false);
   // Achievement toasts — each auto-dismissed after 4 s
   const [achToasts, setAchToasts] = useState<{ key: number; icon: string; name: string }[]>([]);
   const achKeyRef = useRef(0);
@@ -154,9 +163,20 @@ export default function RunEncounterPage() {
     if (status === "authenticated" && runId) fetchState();
   }, [status, runId, fetchState, router]);
 
-  // Reset boss intro acknowledgement whenever we leave the encounter screen
+  // Read localStorage settings once on mount
   useEffect(() => {
-    if (screen.id !== "encounter") setBossIntroAcked(false);
+    setShowCorrectExpl(getShowCorrectExplanation());
+  }, []);
+
+  // Reset boss intro and clear any dangling timers when leaving the encounter screen
+  useEffect(() => {
+    if (screen.id !== "encounter") {
+      setBossIntroAcked(false);
+      if (autoAdvanceTimerRef.current !== null) {
+        clearTimeout(autoAdvanceTimerRef.current);
+        autoAdvanceTimerRef.current = null;
+      }
+    }
   }, [screen.id]);
 
   // ── Enter a map node ────────────────────────────────────────────────────────
@@ -390,14 +410,41 @@ export default function RunEncounterPage() {
       setBusy(false);
     };
 
-    if (result.correct || result.next === "game_over" || result.next === "run_complete") {
-      // Auto-advance after a short pause so the player can see the green flash
+    if (result.next === "game_over" || result.next === "run_complete") {
+      // Navigate away quickly — no need to linger
       setTimeout(doTransition, 1200);
+    } else if (result.correct) {
+      const hasExplanation = showCorrectExpl && !!result.explanation;
+      if (hasExplanation) {
+        // Show green explanation panel; player can click "Next →" or wait for auto-advance
+        pendingTransitionRef.current = doTransition;
+        autoAdvanceTimerRef.current = setTimeout(() => {
+          pendingTransitionRef.current = null;
+          autoAdvanceTimerRef.current = null;
+          doTransition();
+        }, 4000);
+      } else {
+        // Brief green flash, then auto-advance
+        setTimeout(doTransition, 1200);
+      }
     } else {
       // Wrong answer — release busy so "Got it" button is clickable
       setBusy(false);
       pendingTransitionRef.current = doTransition;
     }
+  }
+
+  // Called when the player clicks "Next →" on a correct-answer explanation panel
+  function continueAfterCorrect() {
+    const fn = pendingTransitionRef.current;
+    if (!fn || busy) return;
+    if (autoAdvanceTimerRef.current !== null) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+    pendingTransitionRef.current = null;
+    setBusy(true);
+    fn();
   }
 
   // Called when the player clicks "Got it →" after a wrong-answer explanation
@@ -447,7 +494,10 @@ export default function RunEncounterPage() {
 
   // ── Buy shop item ───────────────────────────────────────────────────────────
   async function buyShopItem(itemId: string, currentRun: RunState, isFreeShop = false) {
-    if (busy) return;
+    // Use a ref-based guard so double-clicks are blocked synchronously,
+    // before React has a chance to commit the `busy` state update.
+    if (shopBusyRef.current) return;
+    shopBusyRef.current = true;
     setBusy(true);
     setShopError(null);
     try {
@@ -456,7 +506,16 @@ export default function RunEncounterPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ runId: currentRun.id, item: itemId }),
       });
-      const data = await res.json();
+
+      // Guard against empty / non-JSON responses (e.g. server crash returning 500 with no body)
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        setShopError("Server error — please try again");
+        return;
+      }
+
       if (!res.ok) { setShopError(data.error ?? "Purchase failed"); return; }
       if (data.nextFloorCategory) setPeekResult(data.nextFloorCategory);
 
@@ -466,6 +525,7 @@ export default function RunEncounterPage() {
         setScreen({ ...screen, run: data.run });
       }
     } finally {
+      shopBusyRef.current = false;
       setBusy(false);
     }
   }
@@ -478,15 +538,23 @@ export default function RunEncounterPage() {
       {achToasts.map((t) => (
         <div
           key={t.key}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-amber-500/40
-                     bg-zinc-900/95 shadow-lg text-sm font-medium animate-fade-in-up"
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl shadow-xl text-sm font-medium animate-fade-in-up"
+          style={{
+            background: "rgba(26,13,18,0.97)",
+            border: "1px solid rgba(214,160,74,0.45)",
+            color: "var(--text-page)",
+            fontFamily: "var(--font-body, system-ui)",
+          }}
         >
           <span className="text-xl leading-none">{t.icon}</span>
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-400 leading-none mb-0.5">
+            <p
+              className="text-[10px] font-bold uppercase tracking-widest leading-none mb-0.5"
+              style={{ color: "#d6a04a" }}
+            >
               Achievement unlocked
             </p>
-            <p>{t.name}</p>
+            <p style={{ color: "var(--text-page)" }}>{t.name}</p>
           </div>
         </div>
       ))}
@@ -494,17 +562,42 @@ export default function RunEncounterPage() {
   ) : null;
 
   if (screen.id === "loading") {
-    return <main className="min-h-screen flex items-center justify-center">Loading run…</main>;
+    return (
+      <main className="min-h-screen flex items-center justify-center" style={{ fontFamily: "var(--font-body, system-ui)" }}>
+        <p className="text-sm animate-pulse" style={{ color: "var(--text-muted)" }}>Loading run…</p>
+      </main>
+    );
   }
 
   if (screen.id === "game_over") {
     return (
       <>
         {AchievementToasts}
-        <main className="min-h-screen flex flex-col items-center justify-center p-8">
-          <h1 className="text-2xl font-bold mb-4">Game Over</h1>
-          <Link href={`/run/${runId}/game-over`} className="text-amber-500 hover:underline">View run summary</Link>
-          <Link href="/run" className="mt-4 hover:underline" style={{ color: "var(--text-muted)" }}>Start a new run</Link>
+        <main
+          className="min-h-screen flex flex-col items-center justify-center p-8 gap-4"
+          style={{ fontFamily: "var(--font-body, system-ui)" }}
+        >
+          <p className="text-4xl">☠</p>
+          <h1
+            className="text-3xl"
+            style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)", fontWeight: 400 }}
+          >
+            Game Over
+          </h1>
+          <Link
+            href={`/run/${runId}/game-over`}
+            className="px-5 py-2 rounded-lg text-sm font-semibold transition-opacity hover:opacity-80"
+            style={{ background: "#d6a04a", color: "#1a0d12" }}
+          >
+            View run summary →
+          </Link>
+          <Link
+            href="/run"
+            className="text-sm transition-opacity hover:opacity-70"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Start a new run
+          </Link>
         </main>
       </>
     );
@@ -514,55 +607,67 @@ export default function RunEncounterPage() {
   if (screen.id === "map" || screen.id === "rest") {
     const { run, mapData, availableNodeIds } = screen;
     const isRest = screen.id === "rest";
-    const diff = difficultyInfo(run.playerDifficulty);
+
+    const heartsDisplay = Array.from({ length: Math.min(run.livesRemaining, 8) }, () => "❤").join("");
 
     return (
-      <main className="min-h-screen p-4 md:p-8">
+      <main className="min-h-screen p-4 md:p-8" style={{ fontFamily: "var(--font-body, system-ui)" }}>
         {AchievementToasts}
-        <div className="max-w-3xl mx-auto flex flex-col gap-4">
-          {/* Stats bar */}
-          <div className="flex items-center justify-between flex-wrap gap-3 px-1">
-            <div className="flex gap-6">
-              <div className="text-center">
-                <p className="text-xl font-bold text-red-400">{run.livesRemaining}</p>
-                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Lives</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xl font-bold text-amber-400">${run.runMoney}</p>
-                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Run $</p>
-              </div>
-              <div className="text-center">
-                <p className={`text-xl font-bold ${diff.className}`}>{diff.label}</p>
-                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Difficulty</p>
-              </div>
+        <div className="max-w-3xl mx-auto flex flex-col gap-5">
+
+          {/* Top bar: stats + exit */}
+          <div
+            className="flex items-center justify-between flex-wrap gap-3 px-4 py-3 rounded-xl"
+            style={{ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(214,160,74,0.18)" }}
+          >
+            <div className="flex items-center gap-5 flex-wrap text-sm">
+              <span style={{ color: "#f87171", fontFamily: "var(--font-mono, monospace)" }}>{heartsDisplay}</span>
+              <span style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>${run.runMoney}</span>
               {run.wave > 1 && (
-                <div className="text-center">
-                  <p className="text-xl font-bold text-blue-400">{run.wave}</p>
-                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>Wave</p>
-                </div>
+                <span style={{ color: "#93c5fd" }}>
+                  Wave&nbsp;<strong>{run.wave}</strong>
+                </span>
               )}
             </div>
-            <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Exit</Link>
+            <Link
+              href="/"
+              className="text-xs transition-opacity hover:opacity-70"
+              style={{ color: "var(--text-muted)" }}
+            >
+              ← Exit
+            </Link>
           </div>
 
-          {/* Rest notification */}
+          {/* Notifications */}
           {isRest && (
-            <div className="rounded-lg border border-blue-500/40 bg-blue-900/20 px-4 py-3 text-blue-300 text-sm font-medium">
-              ❤ You rested and recovered 1 life.
+            <div
+              className="rounded-xl px-4 py-3 text-sm font-medium"
+              style={{ background: "rgba(96,165,250,0.08)", border: "1px solid rgba(96,165,250,0.3)", color: "#93c5fd" }}
+            >
+              ♥ You rested at the Hearth and recovered 1 life.
             </div>
           )}
-
-          {/* Event outcome notification */}
           {!isRest && mapNotification && (
-            <div className="rounded-lg border border-purple-500/40 bg-purple-900/20 px-4 py-3 text-purple-300 text-sm font-medium">
+            <div
+              className="rounded-xl px-4 py-3 text-sm font-medium"
+              style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.3)", color: "#c4b5fd" }}
+            >
               {mapNotification}
             </div>
           )}
 
+          {/* Map heading */}
           <div>
-            <h2 className="text-lg font-semibold mb-3">
+            <h2
+              className="text-xl mb-4"
+              style={{
+                fontFamily: "var(--font-display, Georgia, serif)",
+                color: availableNodeIds.length === 0 ? "#d6a04a" : "var(--text-page)",
+                fontWeight: 400,
+              }}
+            >
               {availableNodeIds.length === 0
-                ? "Run complete — well done!"
+                ? "✦ Run complete — well done!"
                 : "Choose your next path"}
             </h2>
             <RunMap
@@ -577,7 +682,8 @@ export default function RunEncounterPage() {
           {availableNodeIds.length === 0 && (
             <button
               onClick={() => router.push(`/run/${runId}/game-over`)}
-              className="px-6 py-3 rounded-lg bg-amber-600 hover:bg-amber-500 font-semibold transition"
+              className="px-6 py-3 rounded-xl font-semibold transition-opacity hover:opacity-80"
+              style={{ background: "#d6a04a", color: "#1a0d12" }}
             >
               View results →
             </button>
@@ -591,24 +697,47 @@ export default function RunEncounterPage() {
   if (screen.id === "event") {
     const { run, event } = screen;
     return (
-      <main className="min-h-screen p-4 md:p-8">
+      <main className="min-h-screen p-4 md:p-8" style={{ fontFamily: "var(--font-body, system-ui)" }}>
         <div className="max-w-2xl mx-auto flex flex-col gap-4">
 
           {/* Header card */}
-          <div className="rounded-xl border border-purple-600/40 bg-zinc-900/60 p-6 text-zinc-100">
-            <p className="text-purple-400 text-xs font-semibold uppercase tracking-widest mb-1">
-              ? Event Room
+          <div
+            className="rounded-xl p-6"
+            style={{ background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.25)" }}
+          >
+            <p
+              className="text-xs font-semibold uppercase tracking-widest mb-2"
+              style={{ color: "#a78bfa" }}
+            >
+              ? Omen — Event Room
             </p>
-            <h2 className="text-2xl font-bold mb-4">{event.title}</h2>
-            <p className="text-zinc-200 text-sm leading-relaxed italic">{event.description}</p>
-            <div className="flex gap-8 mt-4 pt-4 border-t border-zinc-800">
-              <div className="text-center">
-                <p className="text-lg font-bold text-red-400">{run.livesRemaining}</p>
-                <p className="text-zinc-300 text-xs">Lives</p>
+            <h2
+              className="text-2xl mb-3"
+              style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)", fontWeight: 400 }}
+            >
+              {event.title}
+            </h2>
+            <p
+              className="text-sm leading-relaxed italic mb-4"
+              style={{ color: "var(--text-muted)", fontFamily: "var(--font-display, serif)" }}
+            >
+              {event.description}
+            </p>
+            <div
+              className="flex gap-8 pt-4"
+              style={{ borderTop: "1px solid rgba(214,160,74,0.15)" }}
+            >
+              <div>
+                <p className="text-lg font-semibold" style={{ color: "#f87171", fontFamily: "var(--font-mono, monospace)" }}>
+                  {"❤".repeat(Math.min(run.livesRemaining, 6))}
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Lives</p>
               </div>
-              <div className="text-center">
-                <p className="text-lg font-bold text-amber-400">${run.runMoney}</p>
-                <p className="text-zinc-300 text-xs">Run $</p>
+              <div>
+                <p className="text-lg font-semibold" style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>
+                  ${run.runMoney}
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Run $</p>
               </div>
             </div>
           </div>
@@ -625,25 +754,32 @@ export default function RunEncounterPage() {
                   key={choice.id}
                   onClick={() => resolveEvent(event.id, choice.id)}
                   disabled={isDisabled}
-                  className="text-left p-4 rounded-xl border border-zinc-700 bg-zinc-800/50 hover:border-purple-500/40 hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                  className="text-left p-4 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{
+                    background: "rgba(255,255,255,0.035)",
+                    border: "1px solid rgba(167,139,250,0.2)",
+                  }}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-sm">{choice.label}</p>
-                      <p className="text-zinc-200 text-xs mt-0.5">{choice.description}</p>
+                      <p className="font-semibold text-sm" style={{ color: "var(--text-page)" }}>{choice.label}</p>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{choice.description}</p>
                       {!canAfford && (
-                        <p className="text-red-400/70 text-xs mt-1">
+                        <p className="text-xs mt-1" style={{ color: "#f87171" }}>
                           Requires ${choice.cost}
                         </p>
                       )}
                       {!hasLives && (
-                        <p className="text-red-400/70 text-xs mt-1">
+                        <p className="text-xs mt-1" style={{ color: "#f87171" }}>
                           Requires {choice.requireMinLives} lives
                         </p>
                       )}
                     </div>
                     {(choice.cost ?? 0) > 0 && (
-                      <span className={`shrink-0 font-bold text-sm ${canAfford ? "text-amber-400" : "text-zinc-600"}`}>
+                      <span
+                        className="shrink-0 font-bold text-sm"
+                        style={{ color: canAfford ? "#d6a04a" : "#4b3a2a", fontFamily: "var(--font-mono, monospace)" }}
+                      >
                         ${choice.cost}
                       </span>
                     )}
@@ -657,8 +793,8 @@ export default function RunEncounterPage() {
             <p className="text-center text-sm animate-pulse" style={{ color: "var(--text-muted)" }}>Resolving…</p>
           )}
 
-          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>
-            Exit to home
+          <Link href="/" className="text-sm text-center transition-opacity hover:opacity-70" style={{ color: "var(--text-muted)" }}>
+            ← Exit to home
           </Link>
         </div>
       </main>
@@ -669,14 +805,34 @@ export default function RunEncounterPage() {
   if (screen.id === "free_shop") {
     const { run } = screen;
     return (
-      <main className="min-h-screen p-4 md:p-8">
+      <main className="min-h-screen p-4 md:p-8" style={{ fontFamily: "var(--font-body, system-ui)" }}>
         <div className="max-w-2xl mx-auto flex flex-col gap-4">
-          <div className="rounded-xl border border-green-600/40 bg-zinc-900/50 p-6 text-center text-zinc-100">
-            <p className="text-green-400 text-sm font-medium uppercase tracking-widest mb-1">✦ Shop Node</p>
-            <h2 className="text-2xl font-bold mb-4">Free Shop</h2>
+          <div
+            className="rounded-xl p-6 text-center"
+            style={{ background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.25)" }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: "#4ade80" }}>
+              ❖ Bazaar Node
+            </p>
+            <h2
+              className="text-3xl mb-4"
+              style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)", fontWeight: 400 }}
+            >
+              The Bazaar
+            </h2>
             <div className="flex justify-center gap-10">
-              <div><p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p><p className="text-zinc-300 text-sm mt-1">Lives</p></div>
-              <div><p className="text-2xl font-bold text-amber-400">${run.runMoney}</p><p className="text-zinc-300 text-sm mt-1">Run $</p></div>
+              <div>
+                <p className="text-xl font-semibold" style={{ color: "#f87171", fontFamily: "var(--font-mono, monospace)" }}>
+                  {"❤".repeat(Math.min(run.livesRemaining, 6))}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Lives</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold" style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>
+                  ${run.runMoney}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Run $</p>
+              </div>
             </div>
           </div>
 
@@ -691,11 +847,14 @@ export default function RunEncounterPage() {
           <button
             onClick={goToMap}
             disabled={busy}
-            className="w-full px-6 py-3 rounded-lg bg-amber-600 hover:bg-amber-500 font-semibold text-lg disabled:opacity-50 transition"
+            className="w-full px-6 py-3 rounded-xl font-semibold text-base disabled:opacity-50 transition-opacity hover:opacity-80"
+            style={{ background: "#d6a04a", color: "#1a0d12" }}
           >
             {busy ? "Loading…" : "Continue to map →"}
           </button>
-          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>Exit to home</Link>
+          <Link href="/" className="text-sm text-center transition-opacity hover:opacity-70" style={{ color: "var(--text-muted)" }}>
+            ← Exit to home
+          </Link>
         </div>
       </main>
     );
@@ -706,16 +865,39 @@ export default function RunEncounterPage() {
     const { run, floorCategory } = screen;
     const diff = difficultyInfo(run.playerDifficulty);
     return (
-      <main className="min-h-screen p-4 md:p-8">
+      <main className="min-h-screen p-4 md:p-8" style={{ fontFamily: "var(--font-body, system-ui)" }}>
         {AchievementToasts}
         <div className="max-w-2xl mx-auto flex flex-col gap-4">
-          <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-center text-zinc-100">
-            <p className="text-amber-400 text-sm font-medium uppercase tracking-widest mb-1">Node cleared</p>
-            <h2 className="text-3xl font-bold mb-4">{floorCategory.name}</h2>
+          <div
+            className="rounded-xl p-6 text-center"
+            style={{ background: "rgba(214,160,74,0.06)", border: "1px solid rgba(214,160,74,0.35)" }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: "#d6a04a" }}>
+              Node cleared
+            </p>
+            <h2
+              className="text-3xl mb-4"
+              style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)", fontWeight: 400 }}
+            >
+              {floorCategory.name}
+            </h2>
             <div className="flex justify-center gap-10">
-              <div><p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p><p className="text-zinc-300 text-sm mt-1">Lives</p></div>
-              <div><p className="text-2xl font-bold text-amber-400">${run.runMoney}</p><p className="text-zinc-300 text-sm mt-1">Run $</p></div>
-              <div><p className={`text-2xl font-bold ${diff.className}`}>{diff.label}</p><p className="text-zinc-300 text-sm mt-1">Difficulty</p></div>
+              <div>
+                <p className="text-xl font-semibold" style={{ color: "#f87171", fontFamily: "var(--font-mono, monospace)" }}>
+                  {"❤".repeat(Math.min(run.livesRemaining, 6))}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Lives</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold" style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>
+                  ${run.runMoney}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Run $</p>
+              </div>
+              <div>
+                <p className="text-xl font-semibold" style={{ color: diff.color }}>{diff.label}</p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Difficulty</p>
+              </div>
             </div>
           </div>
 
@@ -730,11 +912,14 @@ export default function RunEncounterPage() {
           <button
             onClick={goToMap}
             disabled={busy}
-            className="w-full px-6 py-3 rounded-lg bg-amber-600 hover:bg-amber-500 font-semibold text-lg disabled:opacity-50 transition"
+            className="w-full px-6 py-3 rounded-xl font-semibold text-base disabled:opacity-50 transition-opacity hover:opacity-80"
+            style={{ background: "#d6a04a", color: "#1a0d12" }}
           >
             {busy ? "Loading…" : "Back to map →"}
           </button>
-          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>Exit to home</Link>
+          <Link href="/" className="text-sm text-center transition-opacity hover:opacity-70" style={{ color: "var(--text-muted)" }}>
+            ← Exit to home
+          </Link>
         </div>
       </main>
     );
@@ -744,16 +929,23 @@ export default function RunEncounterPage() {
   if (screen.id === "relic_pick") {
     const { run, choices } = screen;
     return (
-      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center" style={{ fontFamily: "var(--font-body, system-ui)" }}>
         {AchievementToasts}
         <div className="max-w-xl w-full mx-auto flex flex-col gap-6">
           {/* Header */}
           <div className="text-center">
-            <p className="text-amber-400 text-xs font-semibold uppercase tracking-widest mb-1">
+            <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: "#d6a04a" }}>
               Node Cleared
             </p>
-            <h2 className="text-3xl font-bold text-zinc-100 mb-1">Choose a Relic</h2>
-            <p className="text-zinc-400 text-sm">Pick one to carry through the rest of your run</p>
+            <h2
+              className="text-3xl mb-1"
+              style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)", fontWeight: 400 }}
+            >
+              Choose a Relic
+            </h2>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+              Pick one to carry through the rest of your run
+            </p>
           </div>
 
           {/* Relic cards */}
@@ -763,16 +955,22 @@ export default function RunEncounterPage() {
                 key={relic.id}
                 onClick={() => pickRelicAction(relic.id)}
                 disabled={busy}
-                className="text-left p-5 rounded-xl border border-zinc-700 bg-zinc-900/60 hover:border-amber-500/60 hover:bg-zinc-800/70 disabled:opacity-50 disabled:cursor-not-allowed transition group"
+                className="text-left p-5 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                style={{ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(214,160,74,0.22)" }}
               >
                 <div className="flex items-start gap-4">
                   <span className="text-4xl leading-none shrink-0">{relic.icon}</span>
                   <div className="flex-1 min-w-0">
-                    <p className="font-bold text-zinc-100 text-base group-hover:text-amber-300 transition">
+                    <p className="font-semibold text-base mb-1" style={{ color: "var(--text-page)" }}>
                       {relic.name}
                     </p>
-                    <p className="text-zinc-300 text-sm mt-1">{relic.description}</p>
-                    <p className="text-zinc-500 text-xs mt-1 italic">{relic.detail}</p>
+                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>{relic.description}</p>
+                    <p
+                      className="text-xs mt-1 italic"
+                      style={{ color: "var(--text-muted)", opacity: 0.6, fontFamily: "var(--font-display, serif)" }}
+                    >
+                      {relic.detail}
+                    </p>
                   </div>
                 </div>
               </button>
@@ -781,21 +979,28 @@ export default function RunEncounterPage() {
 
           {/* Stats + skip */}
           <div className="flex items-center justify-between px-1">
-            <div className="flex gap-6 text-sm">
-              <span className="text-red-400 font-bold">{run.livesRemaining} ❤</span>
-              <span className="text-amber-400 font-bold">${run.runMoney}</span>
+            <div className="flex gap-5 text-sm">
+              <span style={{ color: "#f87171", fontFamily: "var(--font-mono, monospace)" }}>
+                {"❤".repeat(Math.min(run.livesRemaining, 6))}
+              </span>
+              <span style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>
+                ${run.runMoney}
+              </span>
             </div>
             <button
               onClick={skipRelicPick}
               disabled={busy}
-              className="text-zinc-500 hover:text-zinc-300 text-sm transition disabled:opacity-40"
+              className="text-sm transition-opacity hover:opacity-70 disabled:opacity-40"
+              style={{ color: "var(--text-muted)" }}
             >
               Skip →
             </button>
           </div>
 
           {busy && (
-            <p className="text-center text-sm animate-pulse text-zinc-500">Claiming relic…</p>
+            <p className="text-center text-sm animate-pulse" style={{ color: "var(--text-muted)" }}>
+              Claiming relic…
+            </p>
           )}
         </div>
       </main>
@@ -806,27 +1011,43 @@ export default function RunEncounterPage() {
   if (screen.id === "wave_complete") {
     const { run } = screen;
     return (
-      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center" style={{ fontFamily: "var(--font-body, system-ui)" }}>
         {AchievementToasts}
         <div className="max-w-md w-full mx-auto flex flex-col gap-6">
           {/* Trophy card */}
-          <div className="rounded-xl border border-amber-500/60 bg-zinc-900/60 p-8 text-center text-zinc-100">
-            <div className="text-5xl mb-3">🏆</div>
-            <p className="text-amber-400 text-xs font-semibold uppercase tracking-widest mb-1">Wave {run.wave} Complete!</p>
-            <h2 className="text-3xl font-bold mb-2">Map Cleared</h2>
-            <p className="text-zinc-300 text-sm mb-6">What will you do?</p>
+          <div
+            className="rounded-xl p-8 text-center"
+            style={{ background: "rgba(214,160,74,0.06)", border: "1px solid rgba(214,160,74,0.4)" }}
+          >
+            <div className="text-5xl mb-4">🏆</div>
+            <p className="text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: "#d6a04a" }}>
+              Wave {run.wave} Complete!
+            </p>
+            <h2
+              className="text-3xl mb-2"
+              style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)", fontWeight: 400 }}
+            >
+              Map Cleared
+            </h2>
+            <p className="text-sm mb-6" style={{ color: "var(--text-muted)" }}>What will you do?</p>
             <div className="flex justify-center gap-10">
               <div>
-                <p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p>
-                <p className="text-zinc-300 text-sm mt-1">Lives</p>
+                <p className="text-xl font-semibold" style={{ color: "#f87171", fontFamily: "var(--font-mono, monospace)" }}>
+                  {"❤".repeat(Math.min(run.livesRemaining, 6))}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Lives</p>
               </div>
               <div>
-                <p className="text-2xl font-bold text-amber-400">${run.runMoney}</p>
-                <p className="text-zinc-300 text-sm mt-1">Run $</p>
+                <p className="text-xl font-semibold" style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>
+                  ${run.runMoney}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Run $</p>
               </div>
               <div>
-                <p className="text-2xl font-bold text-blue-400">{run.score}</p>
-                <p className="text-zinc-300 text-sm mt-1">Score</p>
+                <p className="text-xl font-semibold" style={{ color: "#93c5fd", fontFamily: "var(--font-mono, monospace)" }}>
+                  {run.score}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Score</p>
               </div>
             </div>
           </div>
@@ -836,22 +1057,24 @@ export default function RunEncounterPage() {
             <button
               onClick={advanceWaveAction}
               disabled={busy}
-              className="w-full px-6 py-4 rounded-xl bg-amber-600 hover:bg-amber-500 font-bold text-lg text-white disabled:opacity-50 transition"
+              className="w-full px-6 py-4 rounded-xl font-bold text-base disabled:opacity-50 transition-opacity hover:opacity-80"
+              style={{ background: "#d6a04a", color: "#1a0d12" }}
             >
               {busy ? "Loading…" : `⚔ Progress to Wave ${run.wave + 1}`}
             </button>
-            <p className="text-center text-zinc-400 text-xs -mt-1">
+            <p className="text-center text-xs -mt-1" style={{ color: "var(--text-muted)" }}>
               Bigger map · harder questions · more questions per battle
             </p>
 
             <button
               onClick={cashOutAction}
               disabled={busy}
-              className="w-full px-6 py-4 rounded-xl border border-green-500/40 bg-green-900/20 hover:bg-green-900/40 font-bold text-lg text-green-300 disabled:opacity-50 transition mt-2"
+              className="w-full px-6 py-4 rounded-xl font-bold text-base disabled:opacity-50 transition-all mt-1"
+              style={{ background: "rgba(74,222,128,0.08)", border: "1px solid rgba(74,222,128,0.3)", color: "#4ade80" }}
             >
               {busy ? "Loading…" : `✦ Cash Out — keep $${run.runMoney}`}
             </button>
-            <p className="text-center text-zinc-400 text-xs -mt-1">
+            <p className="text-center text-xs -mt-1" style={{ color: "var(--text-muted)" }}>
               Convert all ${run.runMoney} to collection money · end the run
             </p>
           </div>
@@ -866,55 +1089,100 @@ export default function RunEncounterPage() {
   const hasMulligan = run.freeMulligan > 0;
   const canSkip = hasMulligan || run.runMoney >= run.skipCostRun;
 
-  // Show boss intro card on the very first question of a boss node
+  // ── Boss intro ──────────────────────────────────────────────────────────────
   if (enc.boss && encounterIndex === 0 && !bossIntroAcked) {
     const boss = enc.boss;
     return (
-      <main className="min-h-screen p-4 md:p-8 flex items-center justify-center">
+      <main
+        className="min-h-screen p-4 md:p-8 flex items-center justify-center"
+        style={{ fontFamily: "var(--font-body, system-ui)" }}
+      >
         <div className="max-w-lg w-full mx-auto flex flex-col gap-6">
-          <div className="rounded-xl border border-red-500/50 bg-zinc-900/60 p-8 text-center text-zinc-100">
+          <div
+            className="rounded-xl p-8 text-center"
+            style={{ background: "rgba(154,28,43,0.08)", border: "1px solid rgba(154,28,43,0.4)" }}
+          >
             <div className="text-6xl mb-4">{boss.icon}</div>
-            <p className="text-red-400 text-xs font-semibold uppercase tracking-widest mb-1">
-              Boss Encounter · {floorCategory.name}
+            <p
+              className="text-xs font-semibold uppercase tracking-widest mb-2"
+              style={{ color: "#f87171" }}
+            >
+              ☠ Boss Encounter · {floorCategory.name}
             </p>
-            <h2 className="text-3xl font-bold mb-1">{boss.name}</h2>
-            <p className="text-zinc-400 text-sm mb-6 italic">{boss.title}</p>
-            <blockquote className="border-l-2 border-red-500/40 pl-4 text-zinc-200 text-sm leading-relaxed italic text-left mb-6">
+            <h2
+              className="text-3xl mb-1"
+              style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)", fontWeight: 400 }}
+            >
+              {boss.name}
+            </h2>
+            <p
+              className="text-sm mb-6 italic"
+              style={{ color: "var(--text-muted)", fontFamily: "var(--font-display, serif)" }}
+            >
+              {boss.title}
+            </p>
+            <blockquote
+              className="pl-4 text-sm leading-relaxed italic text-left mb-6"
+              style={{
+                borderLeft: "2px solid rgba(154,28,43,0.5)",
+                color: "var(--text-page)",
+                fontFamily: "var(--font-display, Georgia, serif)",
+              }}
+            >
               &ldquo;{boss.dialogue}&rdquo;
             </blockquote>
-            <div className="flex justify-center gap-10 mb-6 pt-4 border-t border-zinc-800">
+            <div
+              className="flex justify-center gap-10 mb-6 pt-4"
+              style={{ borderTop: "1px solid rgba(214,160,74,0.15)" }}
+            >
               <div>
-                <p className="text-2xl font-bold text-red-400">{run.livesRemaining}</p>
-                <p className="text-zinc-400 text-xs mt-1">Lives</p>
+                <p className="text-xl font-semibold" style={{ color: "#f87171", fontFamily: "var(--font-mono, monospace)" }}>
+                  {"❤".repeat(Math.min(run.livesRemaining, 6))}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Lives</p>
               </div>
               <div>
-                <p className="text-2xl font-bold text-amber-400">${run.runMoney}</p>
-                <p className="text-zinc-400 text-xs mt-1">Run $</p>
+                <p className="text-xl font-semibold" style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>
+                  ${run.runMoney}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Run $</p>
               </div>
               <div>
-                <p className="text-2xl font-bold text-zinc-200">{totalEncountersThisFloor}</p>
-                <p className="text-zinc-400 text-xs mt-1">Questions</p>
+                <p className="text-xl font-semibold" style={{ color: "var(--text-page)", fontFamily: "var(--font-mono, monospace)" }}>
+                  {totalEncountersThisFloor}
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>Questions</p>
               </div>
             </div>
             <button
               onClick={() => setBossIntroAcked(true)}
-              className="w-full px-6 py-4 rounded-xl bg-red-700 hover:bg-red-600 font-bold text-lg text-white transition"
+              className="w-full px-6 py-4 rounded-xl font-bold text-base transition-opacity hover:opacity-80"
+              style={{ background: "#9a1c2b", color: "#ecdab4" }}
             >
               ⚔ Begin Battle
             </button>
           </div>
-          <Link href="/" className="text-sm hover:underline text-center" style={{ color: "var(--text-muted)" }}>
-            Exit to home
+          <Link
+            href="/"
+            className="text-sm text-center transition-opacity hover:opacity-70"
+            style={{ color: "var(--text-muted)" }}
+          >
+            ← Exit to home
           </Link>
         </div>
       </main>
     );
   }
 
+  // ── Answer letter labels A/B/C/D ─────────────────────────────────────────────
+  const OPTION_LABELS = ["A", "B", "C", "D"];
+
   return (
-    <main className="min-h-screen p-4 md:p-8">
+    <main className="min-h-screen p-4 md:p-6 flex flex-col gap-4" style={{ fontFamily: "var(--font-body, system-ui)" }}>
       {AchievementToasts}
-      <div className="max-w-2xl mx-auto flex flex-col gap-6">
+
+      {/* HUD bar */}
+      <div className="max-w-5xl w-full mx-auto">
         <RunHUD
           lives={run.livesRemaining}
           runMoney={run.runMoney}
@@ -932,64 +1200,158 @@ export default function RunEncounterPage() {
           relics={run.relics}
           comboCount={run.comboCount}
         />
+      </div>
 
-        <div className="rounded-xl border border-amber-600/50 bg-zinc-900/50 p-6 text-zinc-100">
-          <p className="text-amber-400/90 text-sm font-medium mb-2">Trivia monster — {monsterTitle}</p>
-          <h2 className="text-xl font-semibold mb-6">{question.text}</h2>
+      {/* Main encounter body: question card + monster panel */}
+      <div className="max-w-5xl w-full mx-auto flex flex-col md:flex-row gap-4 flex-1">
 
-          <div className="flex flex-col gap-3">
+        {/* ── Left: question card ─────────────────────────────────────── */}
+        <div
+          className="flex-1 flex flex-col rounded-xl p-6"
+          style={{ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(214,160,74,0.22)" }}
+        >
+          {/* Category label */}
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "#d6a04a" }}
+          >
+            {floorCategory.name}
+          </p>
+
+          {/* Question text */}
+          <h2
+            className="text-xl leading-snug mb-6 flex-1"
+            style={{
+              fontFamily: "var(--font-display, Georgia, serif)",
+              color: "var(--text-page)",
+              fontWeight: 400,
+            }}
+          >
+            {question.text}
+          </h2>
+
+          {/* Answer options with gilt letter badges */}
+          <div className="flex flex-col gap-2.5">
             {question.options.map((opt, i) => {
-              const eliminated = question.eliminatedIndices?.includes(i) ?? false;
-              // Determine color feedback for this option after an answer is submitted
+              const eliminated       = question.eliminatedIndices?.includes(i) ?? false;
               const isCorrectOption  = answerResult !== null && i === answerResult.correctIndex;
               const isWrongSelection = answerResult !== null && !answerResult.correct && i === answerResult.selectedIndex;
 
-              let colorClass = "";
-              if (isCorrectOption)  colorClass = "!border-green-500 !bg-green-900/30 !text-green-100";
-              if (isWrongSelection) colorClass = "!border-red-500  !bg-red-900/30   !text-red-100";
+              // Background / border / text color based on state
+              let bgColor      = "rgba(255,255,255,0.04)";
+              let borderColor  = "rgba(214,160,74,0.2)";
+              let textColor    = "var(--text-page)";
+              let badgeBg      = "rgba(214,160,74,0.15)";
+              let badgeColor   = "#d6a04a";
+              let lineThrough  = false;
+
+              if (eliminated) {
+                bgColor = "rgba(0,0,0,0.2)";
+                borderColor = "rgba(255,255,255,0.06)";
+                textColor = "rgba(184,168,130,0.3)";
+                badgeBg = "rgba(255,255,255,0.04)";
+                badgeColor = "rgba(184,168,130,0.3)";
+                lineThrough = true;
+              } else if (isCorrectOption) {
+                bgColor = "rgba(74,222,128,0.1)";
+                borderColor = "rgba(74,222,128,0.5)";
+                textColor = "#bbf7d0";
+                badgeBg = "rgba(74,222,128,0.2)";
+                badgeColor = "#4ade80";
+              } else if (isWrongSelection) {
+                bgColor = "rgba(248,113,113,0.1)";
+                borderColor = "rgba(248,113,113,0.5)";
+                textColor = "#fecaca";
+                badgeBg = "rgba(248,113,113,0.2)";
+                badgeColor = "#f87171";
+              }
 
               return (
                 <button
                   key={i}
                   onClick={() => submitAnswer(i)}
                   disabled={busy || eliminated || answerResult !== null}
-                  className={`w-full text-left px-4 py-3 rounded-lg border transition ${
-                    eliminated
-                      ? "bg-zinc-900/30 border-zinc-700/30 text-zinc-600 line-through cursor-not-allowed"
-                      : answerResult !== null
-                      ? `bg-zinc-800/60 border-zinc-600/50 text-zinc-300 cursor-default ${colorClass}`
-                      : "bg-zinc-800 border-zinc-600 text-zinc-100 hover:border-amber-500/50 hover:bg-zinc-700/80 disabled:opacity-50"
-                  }`}
+                  className="w-full text-left flex items-center gap-3 px-4 py-3 rounded-lg transition-all disabled:cursor-not-allowed"
+                  style={{
+                    background: bgColor,
+                    border: `1px solid ${borderColor}`,
+                    textDecoration: lineThrough ? "line-through" : undefined,
+                  }}
                 >
-                  {opt}
+                  {/* Gilt letter badge */}
+                  <span
+                    className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold"
+                    style={{
+                      background: badgeBg,
+                      border: `1px solid ${badgeColor}40`,
+                      color: badgeColor,
+                      fontFamily: "var(--font-mono, monospace)",
+                    }}
+                  >
+                    {OPTION_LABELS[i]}
+                  </span>
+                  <span className="text-sm leading-snug" style={{ color: textColor }}>
+                    {opt}
+                  </span>
                 </button>
               );
             })}
           </div>
 
-          {/* Answer feedback panel */}
+          {/* Answer feedback */}
           {answerResult !== null && (
-            <div className="mt-5">
+            <div className="mt-4">
               {answerResult.correct ? (
-                <p className="text-green-400 font-semibold text-sm animate-pulse">
-                  ✓ Correct! Loading next question…
-                </p>
+                showCorrectExpl && answerResult.explanation ? (
+                  <div
+                    className="rounded-lg p-4 flex flex-col gap-3"
+                    style={{ background: "rgba(74,222,128,0.08)", border: "1px solid rgba(74,222,128,0.3)" }}
+                  >
+                    <p className="text-sm font-semibold" style={{ color: "#4ade80" }}>✓ Correct!</p>
+                    <p className="text-sm leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                      💡 {answerResult.explanation}
+                    </p>
+                    <button
+                      onClick={continueAfterCorrect}
+                      disabled={busy}
+                      className="self-end px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 transition-opacity hover:opacity-80"
+                      style={{ background: "rgba(255,255,255,0.08)", color: "var(--text-page)" }}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-sm font-semibold animate-pulse" style={{ color: "#4ade80" }}>
+                    ✓ Correct! Loading next question…
+                  </p>
+                )
               ) : (
-                <div className="rounded-lg border border-red-500/30 bg-red-950/30 p-4 flex flex-col gap-3">
-                  <p className="text-red-400 font-semibold text-sm">
+                <div
+                  className="rounded-lg p-4 flex flex-col gap-3"
+                  style={{ background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)" }}
+                >
+                  <p className="text-sm font-semibold" style={{ color: "#f87171" }}>
                     {answerResult.shieldAbsorbed
-                      ? "✗ Wrong — shield absorbed the hit."
+                      ? "✗ Wrong — 🛡 shield absorbed the hit."
                       : "✗ Wrong — one life lost."}
                   </p>
-                  {answerResult.explanation && (
-                    <p className="text-zinc-300 text-sm leading-relaxed">
+                  {answerResult.explanation ? (
+                    <p className="text-sm leading-relaxed" style={{ color: "var(--text-muted)" }}>
                       💡 {answerResult.explanation}
+                    </p>
+                  ) : (
+                    <p
+                      className="text-sm italic"
+                      style={{ color: "var(--text-muted)", opacity: 0.5, fontFamily: "var(--font-display, serif)" }}
+                    >
+                      No explanation available.
                     </p>
                   )}
                   <button
                     onClick={continueAfterWrong}
                     disabled={busy}
-                    className="self-end px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-sm font-medium disabled:opacity-50 transition"
+                    className="self-end px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 transition-opacity hover:opacity-80"
+                    style={{ background: "rgba(255,255,255,0.08)", color: "var(--text-page)" }}
                   >
                     Got it →
                   </button>
@@ -998,23 +1360,97 @@ export default function RunEncounterPage() {
             </div>
           )}
 
+          {/* Skip footer */}
           {answerResult === null && (
-            <div className="mt-6 pt-4 border-t border-zinc-700 flex justify-between items-center">
-              <span className="text-zinc-300 text-sm">
-                {hasMulligan ? `Free skip (${run.freeMulligan} left)` : "Skip (no life lost)"}
+            <div
+              className="mt-4 pt-3 flex justify-between items-center"
+              style={{ borderTop: "1px solid rgba(214,160,74,0.12)" }}
+            >
+              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                {hasMulligan ? `Free skip · ${run.freeMulligan} remaining` : `Skip · costs $${run.skipCostRun}`}
               </span>
               <button
                 onClick={payToSkip}
                 disabled={!canSkip || busy}
-                className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm text-zinc-100"
+                className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-opacity hover:opacity-80"
+                style={{ background: "rgba(255,255,255,0.07)", color: "var(--text-muted)", border: "1px solid rgba(255,255,255,0.1)" }}
               >
-                {hasMulligan ? "Skip free" : `Pay $${run.skipCostRun} to skip`}
+                {hasMulligan ? "Skip free" : `Pay $${run.skipCostRun}`}
               </button>
             </div>
           )}
         </div>
 
-        <Link href="/" className="text-sm hover:underline" style={{ color: "var(--text-muted)" }}>Exit to home</Link>
+        {/* ── Right: monster panel ────────────────────────────────────── */}
+        <div
+          className="md:w-64 flex flex-col rounded-xl p-5 gap-4"
+          style={{ background: "rgba(26,13,18,0.6)", border: "1px solid rgba(154,28,43,0.3)" }}
+        >
+          {/* Monster art placeholder */}
+          <div
+            className="w-full aspect-square rounded-lg flex items-center justify-center"
+            style={{ background: "rgba(154,28,43,0.08)", border: "1px solid rgba(154,28,43,0.2)" }}
+          >
+            <Image
+              src="/logo.png"
+              alt="Monster"
+              width={80}
+              height={80}
+              style={{ imageRendering: "pixelated", opacity: 0.7 }}
+            />
+          </div>
+
+          {/* Monster title + flavor */}
+          <div>
+            <p
+              className="text-xs font-semibold uppercase tracking-widest mb-1"
+              style={{ color: "#f87171", opacity: 0.7 }}
+            >
+              {enc.boss ? "☠ Boss" : "✠ Monster"}
+            </p>
+            <p
+              className="text-base font-semibold leading-snug"
+              style={{ fontFamily: "var(--font-display, Georgia, serif)", color: "var(--text-page)" }}
+            >
+              {monsterTitle}
+            </p>
+          </div>
+
+          {/* Divider */}
+          <hr style={{ border: "none", borderTop: "1px solid rgba(214,160,74,0.15)" }} />
+
+          {/* Reward callout */}
+          <div className="flex flex-col gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+            <div className="flex justify-between">
+              <span>Correct</span>
+              <span style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}>
+                +${run.moneyPerCorrectRun ?? 15}
+                {run.moneyMultiplier > 1 && <span style={{ color: "#fbbf24" }}> ×2</span>}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span>Wrong</span>
+              <span style={{ color: "#f87171" }}>1 life</span>
+            </div>
+            {(run.shieldCount ?? 0) > 0 && (
+              <div className="flex justify-between">
+                <span style={{ color: "#60a5fa" }}>🛡 Shield</span>
+                <span style={{ color: "#60a5fa" }}>active</span>
+              </div>
+            )}
+          </div>
+
+          {/* Exit link */}
+          <div className="mt-auto pt-2" style={{ borderTop: "1px solid rgba(214,160,74,0.08)" }}>
+            <Link
+              href="/"
+              className="text-xs transition-opacity hover:opacity-70 block text-center"
+              style={{ color: "var(--text-muted)" }}
+            >
+              ← Exit
+            </Link>
+          </div>
+        </div>
       </div>
     </main>
   );
@@ -1031,33 +1467,72 @@ function ShopGrid({
   onBuy: (id: string) => void;
 }) {
   return (
-    <div className="rounded-xl border border-zinc-700 bg-zinc-900/50 p-4">
-      <h3 className="text-sm font-semibold text-zinc-200 uppercase tracking-widest mb-3">Shop</h3>
+    <div
+      className="rounded-xl p-4"
+      style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(214,160,74,0.18)" }}
+    >
+      <h3
+        className="text-xs font-semibold uppercase tracking-widest mb-3"
+        style={{ color: "#d6a04a" }}
+      >
+        ❖ Wares
+      </h3>
+
       {peekResult && (
-        <p className="text-amber-300 text-sm font-medium mb-3">
+        <p className="text-sm font-medium mb-3" style={{ color: "#d6a04a" }}>
           Next node: <span className="font-bold">{peekResult}</span>
         </p>
       )}
-      {shopError && <p className="text-red-400 text-sm mb-3">{shopError}</p>}
+      {shopError && (
+        <p className="text-sm mb-3" style={{ color: "#f87171" }}>{shopError}</p>
+      )}
+      {(run.relics.includes("bargain-hunter") || run.runClass === "merchant") && (
+        <p className="text-xs font-medium mb-3" style={{ color: "#4ade80" }}>💰 20% discount active</p>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         {SHOP_ITEMS.map((item) => {
           const isDisabled = item.disabled?.(run) ?? false;
-          const canAfford = run.runMoney >= item.price;
+          const hasDiscount = run.relics.includes("bargain-hunter") || run.runClass === "merchant";
+          const effectivePrice = hasDiscount ? Math.floor(item.price * 0.8) : item.price;
+          const canAfford = run.runMoney >= effectivePrice;
+
           return (
             <button
               key={item.id}
               onClick={() => onBuy(item.id)}
               disabled={isDisabled || !canAfford || buying}
-              className="text-left p-3 rounded-lg border border-zinc-700 bg-zinc-800/50 hover:border-amber-500/40 hover:bg-zinc-700/60 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="text-left p-3 rounded-lg transition-all disabled:opacity-35 disabled:cursor-not-allowed"
+              style={{
+                background: "rgba(255,255,255,0.035)",
+                border: "1px solid rgba(214,160,74,0.15)",
+              }}
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="font-medium text-sm">{item.name}</p>
-                  <p className="text-zinc-300 text-xs mt-0.5">{item.desc}</p>
+                  <p className="font-semibold text-sm" style={{ color: "var(--text-page)" }}>{item.name}</p>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{item.desc}</p>
                 </div>
-                <span className="shrink-0 text-amber-400 font-bold text-sm">${item.price}</span>
+                <div className="text-right shrink-0">
+                  <span
+                    className="font-bold text-sm"
+                    style={{ color: "#d6a04a", fontFamily: "var(--font-mono, monospace)" }}
+                  >
+                    ${effectivePrice}
+                  </span>
+                  {hasDiscount && (
+                    <span
+                      className="block text-[10px] line-through"
+                      style={{ color: "var(--text-muted)", opacity: 0.5 }}
+                    >
+                      ${item.price}
+                    </span>
+                  )}
+                </div>
               </div>
-              {isDisabled && <p className="text-amber-500/60 text-xs mt-1">Active</p>}
+              {isDisabled && (
+                <p className="text-xs mt-1" style={{ color: "#d6a04a", opacity: 0.5 }}>Active</p>
+              )}
             </button>
           );
         })}

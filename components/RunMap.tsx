@@ -12,39 +12,39 @@ export const TOKEN_MOVE_MS = 700;
 
 // ── Node appearance ───────────────────────────────────────────────────────────
 const NODE_ICON: Record<string, string> = {
-  battle: "⚔",
-  elite:  "♛",
-  boss:   "☠",
-  shop:   "✦",
-  rest:   "❤",
+  battle: "✠",   // ✠ Maltese cross
+  elite:  "♛",   // ♛ queen
+  boss:   "☠",   // ☠ skull
+  shop:   "❖",   // ❖ diamond
+  rest:   "♥",   // ♥ heart
   event:  "?",
 };
 
 const NODE_STROKE: Record<string, string> = {
-  battle: "#71717a",
-  elite:  "#d97706",
-  boss:   "#ef4444",
-  shop:   "#22c55e",
-  rest:   "#3b82f6",
-  event:  "#a855f7",
+  battle: "#6b6551",
+  elite:  "#c9913d",
+  boss:   "#9a1c2b",
+  shop:   "#4ade80",
+  rest:   "#60a5fa",
+  event:  "#a78bfa",
 };
 
 const NODE_FILL: Record<string, string> = {
-  battle: "#18181b",
-  elite:  "#1c1200",
-  boss:   "#1c0000",
-  shop:   "#071a0a",
-  rest:   "#070f1a",
-  event:  "#0e0718",
+  battle: "#1a0d12",
+  elite:  "#1f1200",
+  boss:   "#1f0a0a",
+  shop:   "#061a0e",
+  rest:   "#060f1a",
+  event:  "#100818",
 };
 
 const NODE_LABEL: Record<string, string> = {
   battle: "Battle",
   elite:  "Elite",
   boss:   "Boss",
-  shop:   "Shop",
-  rest:   "Rest",
-  event:  "Event",
+  shop:   "Bazaar",
+  rest:   "Hearth",
+  event:  "Omen",
 };
 
 // ── Position helper (takes dynamic layout values) ─────────────────────────────
@@ -94,7 +94,10 @@ export function RunMap({
   const tokenPos = tokenNodeId ? posMap[tokenNodeId] : null;
 
   return (
-    <div className="rounded-xl border border-zinc-700 bg-zinc-900/60 overflow-hidden">
+    <div
+      className="rounded-xl overflow-hidden"
+      style={{ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(214,160,74,0.2)" }}
+    >
       <svg
         viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
         className="w-full"
@@ -120,7 +123,7 @@ export function RunMap({
                 y1={from.y}
                 x2={to.x}
                 y2={to.y}
-                stroke={bothDone ? "#52525b" : activated ? "#3f3f46" : "#27272a"}
+                stroke={bothDone ? "#3d3028" : activated ? "#4a3a28" : "#2a1e14"}
                 strokeWidth={bothDone ? 2 : 1.5}
                 strokeDasharray={bothDone ? undefined : "5 4"}
               />
@@ -134,10 +137,10 @@ export function RunMap({
           const completed = completedNodeIds.includes(node.id);
           const available = availableNodeIds.includes(node.id);
           const stroke = available
-            ? "#f59e0b"
+            ? "#d6a04a"
             : completed
-            ? "#3f3f46"
-            : NODE_STROKE[node.type] ?? "#52525b";
+            ? "#3d3028"
+            : NODE_STROKE[node.type] ?? "#6b6551";
 
           return (
             <g
@@ -152,9 +155,9 @@ export function RunMap({
                   cy={y}
                   r={NODE_R + 9}
                   fill="none"
-                  stroke="#f59e0b"
+                  stroke="#d6a04a"
                   strokeWidth={1.5}
-                  opacity={0.35}
+                  opacity={0.4}
                 />
               )}
 
@@ -163,10 +166,10 @@ export function RunMap({
                 cx={x}
                 cy={y}
                 r={NODE_R}
-                fill={completed ? "#09090b" : NODE_FILL[node.type] ?? "#18181b"}
+                fill={completed ? "#0f0710" : NODE_FILL[node.type] ?? "#1a0d12"}
                 stroke={stroke}
                 strokeWidth={available ? 2.5 : 1.5}
-                opacity={completed ? 0.45 : 1}
+                opacity={completed ? 0.4 : 1}
               />
 
               {/* Icon */}
@@ -176,7 +179,7 @@ export function RunMap({
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fontSize={completed ? 14 : 16}
-                fill={completed ? "#52525b" : available ? "#fbbf24" : "#e4e4e7"}
+                fill={completed ? "#3d3028" : available ? "#d6a04a" : "#ecdab4"}
                 fontFamily="system-ui, sans-serif"
               >
                 {completed ? "✓" : NODE_ICON[node.type] ?? "?"}
@@ -189,7 +192,7 @@ export function RunMap({
                   y={y + NODE_R + 13}
                   textAnchor="middle"
                   fontSize={9}
-                  fill={available ? "#fbbf24" : "#52525b"}
+                  fill={available ? "#d6a04a" : "#6b6551"}
                   fontFamily="system-ui, sans-serif"
                 >
                   {node.categoryName ?? NODE_LABEL[node.type]}
@@ -211,10 +214,10 @@ export function RunMap({
             {/* Glow halo */}
             <circle
               r={NODE_R + 7}
-              fill="rgba(251,191,36,0.07)"
-              stroke="#fbbf24"
+              fill="rgba(214,160,74,0.08)"
+              stroke="#d6a04a"
               strokeWidth={1.5}
-              opacity={0.7}
+              opacity={0.75}
             />
             {/* Pixel-art dragon logo — scale(-1,1) flips horizontally around x=0 (the centre) */}
             <image
@@ -231,13 +234,20 @@ export function RunMap({
       </svg>
 
       {/* Legend */}
-      <div className="flex flex-wrap gap-x-5 gap-y-1 px-4 pb-3 text-xs text-zinc-300">
-        <span><span className="text-zinc-300">⚔</span> Battle</span>
-        <span><span className="text-amber-500">♛</span> Elite · harder + relic</span>
-        <span><span className="text-red-500">☠</span> Boss · final battle + relic</span>
-        <span><span className="text-green-500">✦</span> Shop · free items</span>
-        <span><span className="text-blue-500">❤</span> Rest · +1 life</span>
-        <span><span className="text-purple-400">?</span> Event · unknown</span>
+      <div
+        className="flex flex-wrap gap-x-5 gap-y-1 px-4 pb-3 text-xs"
+        style={{
+          color: "var(--text-muted, #b8a882)",
+          borderTop: "1px solid rgba(214,160,74,0.12)",
+          paddingTop: "0.5rem",
+        }}
+      >
+        <span><span style={{ color: "#ecdab4" }}>✠</span> Battle</span>
+        <span><span style={{ color: "#c9913d" }}>♛</span> Elite · harder + relic</span>
+        <span><span style={{ color: "#9a1c2b" }}>☠</span> Boss · final battle + relic</span>
+        <span><span style={{ color: "#4ade80" }}>❖</span> Bazaar · free items</span>
+        <span><span style={{ color: "#60a5fa" }}>♥</span> Hearth · +1 life</span>
+        <span><span style={{ color: "#a78bfa" }}>?</span> Omen · unknown</span>
       </div>
     </div>
   );

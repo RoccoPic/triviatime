@@ -2,9 +2,30 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 import { BACKGROUND_THEME_IDS_LIST } from "@/lib/background-theme";
+import { Cormorant_Garamond, DM_Sans, JetBrains_Mono } from "next/font/google";
+
+const cormorant = Cormorant_Garamond({
+  subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700"],
+  style: ["normal", "italic"],
+  variable: "--font-display",
+  display: "swap",
+});
+
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  variable: "--font-body",
+  display: "swap",
+});
+
+const jetbrains = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  title: "Trivia Roguelike",
+  title: "Trivia Time",
   description: "A roguelike trivia game with floors, monsters, and progress tracking.",
 };
 
@@ -14,7 +35,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${cormorant.variable} ${dmSans.variable} ${jetbrains.variable}`}>
       <body className="antialiased" suppressHydrationWarning>
         <script
           dangerouslySetInnerHTML={{

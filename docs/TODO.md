@@ -52,12 +52,8 @@ Certain relic pairs activate a hidden bonus when both are held simultaneously. R
 - [ ] Show synergy indicator in the relic section of HUD
 - [ ] Synergy reveal moment (toast or glow effect) when second relic of a pair is picked
 
-### Answer Explanations
-After a wrong answer, show a one-sentence explanation of why the correct answer is right. Ties directly into the existing `citation` field on Question — Facts4U data powers this. Turns losing into learning. *(Unique to trivia roguelikes)*
-- [ ] Show explanation panel after wrong answer is revealed (before next question loads)
-- [ ] Pull from `citation` field on Question; fall back to "No explanation available" if null
-- [ ] "Got it" button to dismiss and continue
-- [ ] Optional: show for correct answers too (toggle in settings)
+### Answer Explanations ✅ SHIPPED
+*(See SHIPPED.md #18)*
 
 ### Category Mastery
 Track accuracy per category across all runs. Milestones unlock cosmetic badges and award collection money. Data already exists in the Answer table.

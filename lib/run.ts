@@ -189,6 +189,16 @@ const SHOP_PRICES: Record<ShopItem, number> = {
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
+/**
+ * Encode the floor number and wave into a single integer for Answer.floorIndex.
+ * Wave 1 → same values as before (1–99) so existing data stays valid.
+ * Wave 2 → 101–199, Wave 3 → 201–299, etc.
+ * This prevents wave-2 answers from matching wave-1 floor filter queries.
+ */
+function waveFloorIndex(col1Floor: number, wave: number): number {
+  return (wave - 1) * 100 + col1Floor;
+}
+
 function toRunState(run: any): RunState {
   return {
     id: run.id,
@@ -425,8 +435,9 @@ export async function getRunEncounter(
 
     if (!node.categoryId) return null;
 
-    const floorNum = nodeToFloorNumber(node);
-    const answersThisFloor = run.answers.filter((a) => a.floorIndex === floorNum);
+    const floorNum  = nodeToFloorNumber(node);
+    const floorIdx  = waveFloorIndex(floorNum, run.wave ?? 1);
+    const answersThisFloor = run.answers.filter((a) => a.floorIndex === floorIdx);
     const encounterIndex = answersThisFloor.length;
     const qpf = nodeQuestionsPerFloor(node.type, run.wave ?? 1);
 
@@ -561,6 +572,7 @@ export async function recordAnswer(
     : null;
   const activeCategoryId = activeNode?.categoryId ?? (run.floorCategoryOrder as string[])[run.currentFloor - 1];
   const activeFloor = activeNode ? nodeToFloorNumber(activeNode) : run.currentFloor;
+  const activeFloorIdx  = waveFloorIndex(activeFloor, run.wave ?? 1);
 
   const question = await prisma.question.findUnique({ where: { id: questionId } });
   if (!question || question.categoryId !== activeCategoryId) {
@@ -568,10 +580,15 @@ export async function recordAnswer(
   }
 
   const correct = question.correctIndex === selectedIndex;
-  // Included in every response so the UI can reveal the correct answer and show an explanation
-  const answerInfo = { correctIndex: question.correctIndex, explanation: question.citation ?? null };
+  // Included in every response so the UI can reveal the correct answer and show an explanation.
+  // Filter out placeholder strings left by the question-generation pipeline.
+  const PLACEHOLDER_CITATIONS = new Set(["NEEDS_WEB_SEARCH", "Mathematical derivation"]);
+  const rawCitation = question.citation;
+  const explanation =
+    rawCitation && !PLACEHOLDER_CITATIONS.has(rawCitation) ? rawCitation : null;
+  const answerInfo = { correctIndex: question.correctIndex, explanation };
 
-  const answersThisFloor = run.answers.filter((a) => a.floorIndex === activeFloor);
+  const answersThisFloor = run.answers.filter((a) => a.floorIndex === activeFloorIdx);
   const encounterIndex = answersThisFloor.length;
 
   let livesRemaining = run.livesRemaining;
@@ -639,7 +656,7 @@ export async function recordAnswer(
   const newLowestLives = Math.min(livesRemaining, run.lowestLives ?? run.livesRemaining);
 
   await prisma.answer.create({
-    data: { runId, questionId, correct, skipped: false, floorIndex: activeFloor, encounterIndex },
+    data: { runId, questionId, correct, skipped: false, floorIndex: activeFloorIdx, encounterIndex },
   });
 
   // Adjust question's global difficulty score.
@@ -758,16 +775,17 @@ export async function recordSkip(
     ? (getNodeById(skipMapData, run.currentNodeId) ?? null)
     : null;
   const skipCategoryId = skipNode?.categoryId ?? (run.floorCategoryOrder as string[])[run.currentFloor - 1];
-  const skipFloor = skipNode ? nodeToFloorNumber(skipNode) : run.currentFloor;
+  const skipFloor    = skipNode ? nodeToFloorNumber(skipNode) : run.currentFloor;
+  const skipFloorIdx = waveFloorIndex(skipFloor, run.wave ?? 1);
 
   const question = await prisma.question.findUnique({ where: { id: questionId } });
   if (!question || question.categoryId !== skipCategoryId) return { ok: false, next: "encounter" };
 
-  const answersThisFloor = run.answers.filter((a) => a.floorIndex === skipFloor);
+  const answersThisFloor = run.answers.filter((a) => a.floorIndex === skipFloorIdx);
   const encounterIndex = answersThisFloor.length;
 
   await prisma.answer.create({
-    data: { runId, questionId, correct: false, skipped: true, floorIndex: skipFloor, encounterIndex },
+    data: { runId, questionId, correct: false, skipped: true, floorIndex: skipFloorIdx, encounterIndex },
   });
 
   const qpf = nodeQuestionsPerFloor(skipNode?.type, run.wave ?? 1);
@@ -840,7 +858,7 @@ export async function purchaseShopItem(
   if (item === "hint" && run.hasHint) return { ok: false, error: "Already active" };
   if (item === "double_down" && (run.moneyMultiplier ?? 1) > 1) return { ok: false, error: "Already active" };
 
-  const order = [...(run.floorCategoryOrder as string[])];
+  const order = [...((run.floorCategoryOrder as string[] | null) ?? [])];
   const nextFloorIdx = run.currentFloor; // 1-indexed floor means this is the 0-indexed next position
 
   const updateData: {
@@ -991,6 +1009,7 @@ export async function enterNode(
     data: {
       currentNodeId: nodeId,
       currentFloor: floorNum,
+      pendingRelicNodeId: null,
       ...(shieldOnEntry ? { shieldCount: { increment: 1 } } : {}),
     },
   });
@@ -1201,6 +1220,7 @@ export async function advanceWave(runId: string, userId: string): Promise<(RunMa
       currentNodeId: null,
       playerDifficulty: waveStartDifficulty(newWave),
       currentFloor: 1,
+      pendingRelicNodeId: null,
       ...(bonusLife > 0 ? { livesRemaining: Math.min(run.livesRemaining + bonusLife, 8) } : {}),
     },
   });

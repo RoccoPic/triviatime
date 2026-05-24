@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useBackgroundTheme } from "@/components/BackgroundThemeProvider";
 import { BACKGROUND_THEMES, isLightHex } from "@/lib/background-theme";
 import { getStoredEnabledSlugs, setStoredEnabledSlugs } from "@/lib/topic-settings";
+import { getShowCorrectExplanation, setShowCorrectExplanation } from "@/lib/explanation-settings";
 
 type Category = { id: string; slug: string; name: string };
 
@@ -12,6 +13,12 @@ export default function SettingsPage() {
   const { backgroundTheme, setBackgroundTheme } = useBackgroundTheme();
   const [categories, setCategories] = useState<Category[]>([]);
   const [enabledSlugs, setEnabledSlugs] = useState<Set<string>>(new Set());
+  const [showCorrectExpl, setShowCorrectExpl] = useState(false);
+
+  // Read localStorage settings once on mount (client-only)
+  useEffect(() => {
+    setShowCorrectExpl(getShowCorrectExplanation());
+  }, []);
 
   useEffect(() => {
     fetch("/api/categories")
@@ -75,6 +82,39 @@ export default function SettingsPage() {
                 </button>
               );
             })}
+          </div>
+        </section>
+
+        {/* ── Gameplay ────────────────────────────────────────────────── */}
+        <section className="mb-8 p-4 rounded-lg bg-zinc-900/80 border border-zinc-700">
+          <h2 className="text-lg font-semibold mb-4">Gameplay</h2>
+
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-zinc-200 text-sm font-medium">Explain correct answers</p>
+              <p className="text-zinc-400 text-xs mt-0.5 max-w-xs">
+                Show the citation / explanation after right answers, not just wrong ones
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showCorrectExpl}
+              onClick={() => {
+                const next = !showCorrectExpl;
+                setShowCorrectExplanation(next);
+                setShowCorrectExpl(next);
+              }}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+                showCorrectExpl ? "bg-amber-500" : "bg-zinc-600"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform duration-200 ${
+                  showCorrectExpl ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
           </div>
         </section>
 
